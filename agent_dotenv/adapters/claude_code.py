@@ -50,10 +50,13 @@ def build(ctx: BuildContext) -> AdapterOutput:
         path = Path(module.__file__)
         files["loader/%s" % path.name] = path.read_text(encoding="utf-8")
     files["loader/home.txt"] = str(Path(ctx.source_dir).resolve())
-    for key, source in ctx.sources.items():
-        # The plugin never holds external text, also not from a base file.
-        if source.layer == "base" and source.meta.scope != "external":
-            files["loader/base/%s" % key] = serialize(source.meta, source.body)
+    # Bundle the filtered base layer itself, not the resolved entries: a later
+    # layer's override or `append` must not remove base text from the hook.
+    # The build has already loaded this layer strictly. Filtering with
+    # external_allowed=False keeps external and sensitive text out.
+    base_sources, _ = layers.load_layer(Path(ctx.source_dir) / "base", "base", strict=False)
+    for key, source in layers.filter_sources(base_sources, NAME, False).items():
+        files["loader/base/%s" % key] = serialize(source.meta, source.body)
 
     context = session_start.render_context(
         {k: s for k, s in ctx.sources.items() if s.layer != "external"},

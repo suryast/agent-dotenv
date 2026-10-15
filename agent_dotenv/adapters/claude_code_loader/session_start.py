@@ -22,7 +22,8 @@ from typing import Dict, List, Mapping, Optional, Sequence
 _IMPORT_ERROR = None  # type: Optional[BaseException]
 try:
     try:
-        from agent_dotenv.layers import (
+        # Relative, so an installed or decoy agent_dotenv package is never used.
+        from ...layers import (
             Source,
             external_layer_dirs,
             load_layer,

@@ -8,6 +8,8 @@ import textwrap
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 import agent_dotenv
 from agent_dotenv.adapters import claude_code
 from agent_dotenv.adapters.claude_code_loader import session_start
@@ -135,13 +137,43 @@ def test_no_external_or_sensitive_marker_anywhere_in_plugin(tmp_path):
     assert not (plugin / "loader" / "base" / "notes.md").exists()
 
 
-def test_external_scope_base_file_not_bundled(tmp_path):
+@pytest.mark.parametrize("scope", ["external", "sensitive"])
+def test_external_scope_base_file_not_bundled(tmp_path, scope):
     source = make_source(tmp_path)
-    write_md(source / "base" / "vendor.md", "---\nscope: external\n---\nVENDOR_MARKER_3c\n")
+    write_md(source / "base" / "vendor.md", "---\nscope: %s\n---\nVENDOR_MARKER_3c\n" % scope)
     plugin = build_plugin(source, external_env(source))
     assert not (plugin / "loader" / "base" / "vendor.md").exists()
     for rel, data in plugin_files(plugin).items():
         assert b"VENDOR_MARKER_3c" not in data, rel
+
+
+def test_base_text_kept_under_local_append(tmp_path):
+    source = make_source(tmp_path)
+    write_md(
+        source / "local" / "identity.md",
+        "---\nscope: personal\nmode: append\n---\nLOCAL_HALF\n",
+    )
+    plugin = build_plugin(source, {})
+    meta, body = parse((plugin / "loader" / "base" / "identity.md").read_text(encoding="utf-8"))
+    assert (meta.scope, body) == ("personal", "FIXTURE_IDENTITY: uses a terminal.\n")
+    proc = run_hook(plugin, tmp_path / "elsewhere", {}, "--format", "plain")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == (
+        "FIXTURE_RULE: be brief.\n\nFIXTURE_IDENTITY: uses a terminal.\n\nLOCAL_HALF\n"
+    )
+
+
+def test_external_override_keeps_base_rules_bundled(tmp_path):
+    source = make_source(tmp_path)
+    write_md(
+        source / "external_acme" / "rules.md",
+        "---\nscope: personal\n---\nEXT_RULE_MARKER_4d\n",
+    )
+    plugin = build_plugin(source, external_env(source))
+    meta, body = parse((plugin / "loader" / "base" / "rules.md").read_text(encoding="utf-8"))
+    assert body == "FIXTURE_RULE: be brief.\n"
+    for rel, data in plugin_files(plugin).items():
+        assert b"EXT_RULE_MARKER_4d" not in data, rel
 
 
 def test_stale_output_removed(tmp_path):
@@ -333,6 +365,27 @@ def test_hook_survives_decoy_frontmatter_module_in_cwd_and_pythonpath(tmp_path):
     assert "FIXTURE_RULE: be brief." in context
     assert "glossary.md: Acme terms" in context
     assert "DECOY" not in proc.stdout + proc.stderr
+
+
+def test_hook_survives_decoy_agent_dotenv_package_in_cwd_and_pythonpath(tmp_path):
+    source = make_source(tmp_path)
+    plugin = build_plugin(source, {})
+    decoy_cwd = tmp_path / "decoy_cwd"
+    decoy_pp = tmp_path / "decoy_pp"
+    for folder in (decoy_cwd, decoy_pp):
+        package = folder / "agent_dotenv"
+        package.mkdir(parents=True)
+        for module in ("__init__", "layers", "frontmatter"):
+            (package / ("%s.py" % module)).write_text(
+                "print('DECOY_PKG_%s')\nraise RuntimeError('DECOY_PKG_%s')\n" % (module, module),
+                encoding="utf-8",
+            )
+    env = {"PYTHONPATH": str(decoy_pp), LAYERS_VAR: str(source / "external_acme")}
+    proc = run_hook(plugin, decoy_cwd, env)
+    assert "DECOY" not in proc.stdout + proc.stderr
+    context = hook_context(proc)
+    assert "FIXTURE_RULE: be brief." in context
+    assert "glossary.md: Acme terms" in context
 
 
 def test_hook_without_home_txt_skips_local(tmp_path, capsys):
