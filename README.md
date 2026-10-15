@@ -39,7 +39,7 @@ flowchart LR
   E --> B{"agent-dotenv build"}
   B -- "error or secret finding, exit 1" --> E
   B -- "ok" --> D{"agent-dotenv doctor"}
-  D -- "FAIL, for example dist is older than the sources" --> B
+  D -- "FAIL because dist is older than the sources" --> B
   D -- "ok" --> U["use the files in dist/NAME/"]
 ```
 

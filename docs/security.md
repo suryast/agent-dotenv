@@ -26,7 +26,7 @@ This diagram shows how the core decides, for one source file and one adapter, wh
 flowchart TD
   START["build one adapter"] --> ACTIVE{"Is an external layer active<br/>and does the adapter accept external content?"}
   ACTIVE -- "yes" --> WITHEXT["layers given to the adapter:<br/>base, external layers, local<br/>external content allowed"]
-  ACTIVE -- "no" --> NOEXT["layers given to the adapter:<br/>base and local only<br/>external layer folders are never passed<br/>external content not allowed"]
+  ACTIVE -- "no" --> NOEXT["layers given to the adapter:<br/>base and local only<br/>no external files in ctx.sources, ctx.external_index is empty<br/>the folder paths in ctx.external_roots are still passed<br/>external content not allowed"]
   WITHEXT --> FILE["filter each source file in each layer"]
   NOEXT --> FILE
   FILE --> SENS{"Is the scope sensitive?"}
@@ -105,7 +105,7 @@ flowchart TD
   RUN["build starts"] --> LINK{"Is dist a symlink?"}
   LINK -- "yes" --> REFUSE["build refuses and exits 1<br/>nothing is deleted"]
   LINK -- "no" --> PRE{"Does secrets.ref parse<br/>and do all drop-in adapters load?"}
-  PRE -- "no" --> NAMED["delete dist/NAME/ for each explicit --target name<br/>valid adapter names only, all is skipped<br/>other folders in dist are kept"]
+  PRE -- "no" --> NAMED["delete dist/NAME/ for each explicit --target name<br/>names that match the adapter name pattern, even if no such adapter exists<br/>all is skipped, other folders in dist are kept"]
   PRE -- "yes" --> KNOWN{"Is every target name known?"}
   KNOWN -- "no" --> NONE["nothing was attempted<br/>no dist/NAME/ folder is deleted<br/>exit 1 with the known names"]
   KNOWN -- "yes" --> LATER{"Do all later steps succeed?<br/>layers and frontmatter targets, adapter builds,<br/>output paths, secret scan, writing files"}
