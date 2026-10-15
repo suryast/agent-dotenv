@@ -171,6 +171,16 @@ def test_hidden_directories_skipped(tmp_path):
     assert set(skills["demo"].files) == {"SKILL.md"}
 
 
+def test_hidden_files_skipped_in_skills_and_sources(tmp_path):
+    md(tmp_path, "ok.md", "x")
+    md(tmp_path, ".hidden.md", "HIDDEN_MARKER")
+    md(tmp_path, "sub/.also-hidden.md", "HIDDEN_MARKER")
+    skill(tmp_path, "demo", {"SKILL.md": "ok", ".DS_Store": "x", "sub/.keep": "x", "sub/ref.md": "y"})
+    sources, skills = load_layer(tmp_path, "base")
+    assert set(sources) == {"ok.md"}
+    assert set(skills["demo"].files) == {"SKILL.md", "sub/ref.md"}
+
+
 def test_strict_raises_with_path_nonstrict_skips(tmp_path):
     md(tmp_path, "good.md", "x")
     (tmp_path / "bad.md").write_text("no frontmatter here\n")
