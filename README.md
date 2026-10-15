@@ -31,6 +31,18 @@ python3 -m agent_dotenv build --source ~/my-agent-env
 
 ## Quickstart
 
+The diagram shows the whole workflow before the steps.
+
+```mermaid
+flowchart LR
+  I["agent-dotenv init"] --> E["edit base/ and local/ files"]
+  E --> B{"agent-dotenv build"}
+  B -- "error or secret finding, exit 1" --> E
+  B -- "ok" --> D{"agent-dotenv doctor"}
+  D -- "FAIL, for example dist is older than the sources" --> B
+  D -- "ok" --> U["use the files in dist/NAME/"]
+```
+
 Make a source folder. This is your own folder, separate from this repository. A private repository works well.
 
 ```bash

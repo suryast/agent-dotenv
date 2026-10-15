@@ -20,6 +20,26 @@ The core filters each layer for each adapter before the layers merge:
 
 A dropped file cannot leak into a later file through `mode: append`. A dropped override falls back to the earlier file.
 
+This diagram shows how the core decides, for one source file and one adapter, whether the file is kept.
+
+```mermaid
+flowchart TD
+  START["build one adapter"] --> ACTIVE{"Is an external layer active<br/>and does the adapter accept external content?"}
+  ACTIVE -- "yes" --> WITHEXT["layers given to the adapter:<br/>base, external layers, local<br/>external content allowed"]
+  ACTIVE -- "no" --> NOEXT["layers given to the adapter:<br/>base and local only<br/>external layer folders are never passed<br/>external content not allowed"]
+  WITHEXT --> FILE["filter each source file in each layer"]
+  NOEXT --> FILE
+  FILE --> SENS{"Is the scope sensitive?"}
+  SENS -- "yes" --> DROP["dropped, always"]
+  SENS -- "no" --> EXT{"Is the scope external?"}
+  EXT -- "yes" --> ALLOWED{"Is external content allowed?"}
+  ALLOWED -- "no" --> DROP
+  ALLOWED -- "yes" --> TGT{"Does targets exist<br/>and not list this adapter?"}
+  EXT -- "no" --> TGT
+  TGT -- "yes" --> DROP
+  TGT -- "no" --> KEEP["kept, then resolved with the other layers"]
+```
+
 ## The filter rule per adapter
 
 | Adapter | Accepts external | What it receives | Notes |
@@ -77,6 +97,21 @@ A failed build deletes `dist/<name>/` for every adapter requested in that run. W
 When a target name is unknown, nothing is built and no output is deleted. The build exits 1 and lists the known names.
 
 Known limit: if `secrets.ref` is invalid or a drop-in adapter does not load, the build cannot check the target names yet, so it deletes `dist/<name>/` for every `--target` name, and a mistyped name that equals a folder you made yourself in `dist/` deletes that folder.
+
+This diagram shows what a failed build deletes, depending on how far the build got.
+
+```mermaid
+flowchart TD
+  RUN["build starts"] --> LINK{"Is dist a symlink?"}
+  LINK -- "yes" --> REFUSE["build refuses and exits 1<br/>nothing is deleted"]
+  LINK -- "no" --> PRE{"Does secrets.ref parse<br/>and do all drop-in adapters load?"}
+  PRE -- "no" --> NAMED["delete dist/NAME/ for each explicit --target name<br/>valid adapter names only, all is skipped<br/>other folders in dist are kept"]
+  PRE -- "yes" --> KNOWN{"Is every target name known?"}
+  KNOWN -- "no" --> NONE["nothing was attempted<br/>no dist/NAME/ folder is deleted<br/>exit 1 with the known names"]
+  KNOWN -- "yes" --> LATER{"Do all later steps succeed?<br/>layers and frontmatter targets, adapter builds,<br/>output paths, secret scan, writing files"}
+  LATER -- "yes" --> OK["dist/NAME/ is replaced for each requested adapter<br/>exit 0"]
+  LATER -- "no" --> ALLREQ["delete dist/NAME/ for every requested adapter<br/>all means every adapter<br/>adapters not requested are kept"]
+```
 
 ## What is never emitted
 

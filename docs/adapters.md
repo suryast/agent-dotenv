@@ -85,6 +85,50 @@ Import them from `agent_dotenv.adapters_api` (`BuildContext`, `AdapterOutput`), 
 
 The core checks the output before it writes anything. A bad path, a wrong type or a duplicate path fails the build.
 
+## One build run
+
+The diagram shows the order of one `agent-dotenv build` run, and where your adapter's `build` is called.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant CLI as agent-dotenv build
+  participant Core as core pipeline
+  participant Ad as your adapter
+  participant Dist as dist folder
+  CLI->>Core: source folder, targets, environment, options
+  Core->>Core: refuse when dist is a symlink
+  Core->>Core: read secrets.ref names
+  Core->>Core: discover built-in adapters and drop-ins
+  Core->>Core: check target names, all means every adapter
+  Core->>Core: read local/paths.env, find external layer folders
+  Core->>Core: load base, external layers, local
+  Core->>Core: check that frontmatter targets name known adapters
+  loop each requested adapter
+    Core->>Core: filter each layer for this adapter, then resolve
+    Core->>Core: build the BuildContext
+    Core->>Ad: build with the BuildContext
+    Ad-->>Core: AdapterOutput with files, warnings and scan_texts
+    Core->>Core: check the output type and every output path
+  end
+  alt any adapter raised or returned invalid output
+    Core->>Dist: delete dist/NAME/ for each requested adapter
+    Core-->>CLI: errors
+  else no adapter error
+    Core->>Core: secret scan
+    alt scan found a problem
+      Core->>Dist: delete dist/NAME/ for each requested adapter
+      Core-->>CLI: errors and findings
+    else scan is clean
+      Core->>Dist: delete the old dist/NAME/, then write the new files
+      Core-->>CLI: written paths and warnings
+    end
+  end
+  CLI->>CLI: print the result, exit 0 on success and 1 on failure
+```
+
+Any step before the adapters run can also fail the build. See [security.md](security.md) for which folders a failed build deletes.
+
 ## Rules
 
 1. **Return data. Do not write files.** The core deletes `dist/<NAME>/` and writes the files you return. This guarantees that stale output cannot remain and that the scan covers everything.
