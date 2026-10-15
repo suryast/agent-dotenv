@@ -68,6 +68,10 @@ The kind is `pattern:<name>` or `secret-ref:<NAME>`. On a finding the build exit
 
 The scan is a safety net. Keep secrets out of the source folder in the first place.
 
+## What a failed build deletes
+
+Known limit: if `secrets.ref` is invalid or a drop-in adapter does not load, the build cannot check the target names yet, so it deletes `dist/<name>/` for every `--target` name, and a mistyped name that equals a folder you made yourself in `dist/` deletes that folder.
+
 ## What is never emitted
 
 - Files with `scope: sensitive`, by any adapter, including drop-ins that read `ctx`.

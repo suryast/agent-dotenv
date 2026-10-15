@@ -13,6 +13,7 @@ from agent_dotenv.adapters_api import discover
 from agent_dotenv.cli import main
 from agent_dotenv.frontmatter import parse
 from agent_dotenv.layers import external_layer_dirs, read_paths_env
+from agent_dotenv.pipeline import run_build
 from agent_dotenv.templates import LAYER_FILES, SOURCE_FILES
 
 from tests.conftest import make_source
@@ -300,6 +301,46 @@ def test_build_prints_findings_without_values(tmp_path, capsys):
     assert TOKEN not in out
     assert SECRET_VALUE not in out
     assert files_under(source / "dist") == []
+
+
+def test_build_typo_target_keeps_earlier_output(tmp_path, capsys):
+    source = make_source(tmp_path)
+    good = ["build", "--source", str(source), "--target", "agents-md", "--target", "cursor"]
+    assert main(good, {}, tmp_path) == 0
+    capsys.readouterr()
+    typo = ["build", "--source", str(source), "--target", "agents-md", "--target", "cusror"]
+    assert main(typo, {}, tmp_path) == 1
+    assert "cusror" in capsys.readouterr().out
+    assert (source / "dist" / "agents-md" / "AGENTS.md").is_file()
+    assert files_under(source / "dist" / "cursor")
+
+
+LEAK_ADAPTER = '''\
+from agent_dotenv.adapters_api import AdapterOutput
+
+NAME = "leak"
+ACCEPTS_EXTERNAL = False
+
+
+def build(ctx):
+    return AdapterOutput(files={"dir-" + %r + "/x.txt": "x " + %r})
+'''
+
+
+def test_build_redacts_secret_in_finding_path(tmp_path, capsys):
+    source = make_source(tmp_path)
+    (source / "adapters").mkdir()
+    (source / "adapters" / "leak.py").write_text(LEAK_ADAPTER % (SECRET_VALUE, TOKEN), encoding="utf-8")
+    (source / "secrets.ref").write_text("MY_TOKEN=env\n", encoding="utf-8")
+    env = {"MY_TOKEN": SECRET_VALUE}
+    result = run_build(source, ["leak"], env)
+    assert [f.file for f in result.findings] == ["leak/dir-[redacted]/x.txt"]
+    capsys.readouterr()
+    assert main(["build", "--source", str(source), "--target", "leak"], env, tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "leak/dir-[redacted]/x.txt:1 pattern:ghp" in out
+    assert SECRET_VALUE not in out
+    assert TOKEN not in out
 
 
 def test_build_prints_adapter_lines_then_warnings(tmp_path, capsys):
