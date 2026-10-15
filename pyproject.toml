@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-dotenv"
+version = "0.1.0"
+description = "Build agent instruction files for many harnesses from one source folder."
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = []
+
+[project.scripts]
+agent-dotenv = "agent_dotenv.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agent_dotenv*"]
+exclude = ["tests*"]
