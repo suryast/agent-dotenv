@@ -55,10 +55,11 @@ def _load_skills(root: Path, real_root: str, layer: str) -> Dict[str, Skill]:
     if not skills_root.is_dir():
         return skills
     for entry in sorted(skills_root.iterdir()):
-        if not entry.is_dir() or not _inside(real_root, entry):
+        if entry.name.startswith(".") or not entry.is_dir() or not _inside(real_root, entry):
             continue
         files: Dict[str, bytes] = {}
-        for dirpath, _dirs, names in os.walk(entry):
+        for dirpath, dirs, names in os.walk(entry):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
             for name in names:
                 f = Path(dirpath) / name
                 if f.is_file() and _inside(real_root, f):

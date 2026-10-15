@@ -163,8 +163,12 @@ def test_hidden_directories_skipped(tmp_path):
     md(tmp_path, "ok.md", "x")
     (tmp_path / ".obsidian").mkdir()
     (tmp_path / ".obsidian" / "note.md").write_text("no frontmatter\n")
-    sources, _ = load_layer(tmp_path, "base")
+    skill(tmp_path, "demo", {"SKILL.md": "ok", ".git/config": "x", "sub/.obsidian/n.md": "x"})
+    skill(tmp_path, ".trash", {"SKILL.md": "x"})
+    sources, skills = load_layer(tmp_path, "base")
     assert set(sources) == {"ok.md"}
+    assert set(skills) == {"demo"}
+    assert set(skills["demo"].files) == {"SKILL.md"}
 
 
 def test_strict_raises_with_path_nonstrict_skips(tmp_path):
