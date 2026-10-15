@@ -3,10 +3,12 @@ from __future__ import annotations
 
 from . import agents_md
 from . import claude_ai_project
+from . import claude_code
 from . import cursor
 
 BUILTIN: tuple = (
     agents_md,
     claude_ai_project,
+    claude_code,
     cursor,
 )
