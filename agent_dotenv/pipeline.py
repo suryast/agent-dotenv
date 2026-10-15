@@ -26,6 +26,9 @@ ALL = "all"
 DIST_DIR = "dist"
 LOCAL_KEYS = ("DEVICE_NAME", "VAULT_PATH")
 REDACTED = "[redacted]"
+# Finding labels for the scan of output file paths and of scan_texts keys.
+OUTPUT_NAMES_LABEL = "(output file names)"
+SCAN_TEXT_NAMES_LABEL = "(scan text names)"
 
 
 @dataclass
@@ -312,6 +315,14 @@ def run_build(
         findings.extend(
             scan({"%s/%s" % (name, k): t for k, t in scan_texts.items()}, secret_names, env)
         )
+        # Names can leak too: scan them as one sorted list each. The label holds no name,
+        # so a finding never repeats the value; its line is the position in the list.
+        for label, keys in (
+            (OUTPUT_NAMES_LABEL, [rel for rel, _data in files]),
+            (SCAN_TEXT_NAMES_LABEL, list(scan_texts)),
+        ):
+            listing = {"%s/%s" % (name, label): "\n".join(sorted(keys))}
+            findings.extend(scan(listing, secret_names, env))
     if findings:
         errors.append("secret scan found %d problem(s); no output was kept" % len(findings))
         return finish(False, {}, names)

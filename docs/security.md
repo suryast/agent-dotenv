@@ -66,7 +66,7 @@ The build scans every output before it keeps anything. It fails on:
 
 `secrets.ref` holds names, never values. Each line is `NAME=source`, where `source` is `env`, `keychain:<item>` or `op://<reference>`. A value shorter than 8 characters after trimming is ignored, because it would match ordinary text.
 
-The scan covers every text file the adapters return and every text they list in `scan_texts`. A finding names the file and the line, and never the value:
+The scan covers every text file the adapters return and every text they list in `scan_texts`. It also covers the output file paths, including the paths of binary files, and the names in `scan_texts`. The build scans these names before it writes any file. A finding in an output file path is labelled `<adapter>/(output file names)`, and a finding in a `scan_texts` name is labelled `<adapter>/(scan text names)`. Its line is the position of the name in the sorted list of that adapter's names, so the finding never shows the name. A finding names the file and the line, and never the value:
 
 ```text
 error: secret scan found 1 problem(s); no output was kept

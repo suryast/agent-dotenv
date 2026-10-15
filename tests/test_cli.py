@@ -392,11 +392,15 @@ def test_build_redacts_secret_in_finding_path(tmp_path, capsys):
     (source / "secrets.ref").write_text("MY_TOKEN=env\n", encoding="utf-8")
     env = {"MY_TOKEN": SECRET_VALUE}
     result = run_build(source, ["leak"], env)
-    assert [f.file for f in result.findings] == ["leak/dir-[redacted]/x.txt"]
+    assert [(f.file, f.kind) for f in result.findings] == [
+        ("leak/dir-[redacted]/x.txt", "pattern:ghp"),
+        ("leak/(output file names)", "secret-ref:MY_TOKEN"),
+    ]
     capsys.readouterr()
     assert main(["build", "--source", str(source), "--target", "leak"], env, tmp_path) == 1
     out = capsys.readouterr().out
     assert "leak/dir-[redacted]/x.txt:1 pattern:ghp" in out
+    assert "leak/(output file names):1 secret-ref:MY_TOKEN" in out
     assert SECRET_VALUE not in out
     assert TOKEN not in out
 

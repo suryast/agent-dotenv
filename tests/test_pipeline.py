@@ -625,7 +625,8 @@ def test_secret_ref_value_in_finding_path_is_redacted(tmp_path):
     result = run_build(source, ["alpha"], env={"MY_TOKEN": value})
     assert not result.ok
     assert [(f.file, f.line, f.kind) for f in result.findings] == [
-        ("alpha/dir-[redacted]/x.txt", 1, "pattern:ghp")
+        ("alpha/dir-[redacted]/x.txt", 1, "pattern:ghp"),
+        ("alpha/(output file names)", 1, "secret-ref:MY_TOKEN"),
     ]
     assert value not in all_text(result)
 
@@ -641,5 +642,120 @@ def test_secret_ref_value_in_scan_text_key_is_redacted(tmp_path):
     write_adapter(source, "alpha", body)
     result = run_build(source, ["alpha"], env={"MY_TOKEN": value})
     assert not result.ok
-    assert [f.file for f in result.findings] == ["alpha/key-[redacted]"]
+    assert [f.file for f in result.findings] == ["alpha/key-[redacted]", "alpha/(scan text names)"]
     assert value not in all_text(result)
+
+
+def all_files_text(root: Path) -> str:
+    """Every path and every readable text under root, for a leak check on disk.
+
+    The drop-in adapters folder is skipped: the test adapter's own code holds the value."""
+    parts = []
+    for p in sorted(root.rglob("*")):
+        if "adapters" in p.relative_to(root).parts:
+            continue
+        parts.append(p.as_posix())
+        if p.is_file():
+            parts.append(p.read_bytes().decode("utf-8", "replace"))
+    return "\n".join(parts)
+
+
+def build_cli(source: Path, target: str, env: dict, capsys) -> tuple:
+    from agent_dotenv.cli import main
+
+    rc = main(["build", "--source", str(source), "--target", target], env=env, cwd=source)
+    out, err = capsys.readouterr()
+    return rc, out + err
+
+
+def test_token_in_output_path_fails_and_never_leaks(tmp_path, capsys):
+    source = make_source(tmp_path)
+    token = fake_token()
+    body = "return AdapterOutput(files={'dir-' + %r + '/x.txt': 'clean text'})" % token
+    write_adapter(source, "alpha", body)
+    result = run_build(source, ["alpha"], env={})
+    assert not result.ok
+    assert [(f.file, f.line, f.kind) for f in result.findings] == [
+        ("alpha/(output file names)", 1, "pattern:ghp")
+    ]
+    assert token not in all_text(result)
+    assert not (source / "dist").exists()
+    rc, out = build_cli(source, "alpha", {}, capsys)
+    assert rc == 1
+    assert "alpha/(output file names):1 pattern:ghp" in out
+    assert token not in out
+    assert not (source / "dist").exists()
+    assert token not in all_files_text(tmp_path)
+
+
+def test_secret_ref_value_in_output_path_fails_and_never_leaks(tmp_path, capsys):
+    source = make_source(tmp_path)
+    value = "s3cr3t-" + "value-for-tests"
+    (source / "secrets.ref").write_text("MY_TOKEN=env\n", encoding="utf-8")
+    body = "return AdapterOutput(files={'dir-' + %r + '/x.txt': 'clean text'})" % value
+    write_adapter(source, "alpha", body)
+    plant_earlier_run(source, "alpha")
+    env = {"MY_TOKEN": value}
+    result = run_build(source, ["alpha"], env=env)
+    assert not result.ok
+    assert [(f.file, f.line, f.kind) for f in result.findings] == [
+        ("alpha/(output file names)", 1, "secret-ref:MY_TOKEN")
+    ]
+    assert value not in all_text(result)
+    assert not (source / "dist").exists()
+    rc, out = build_cli(source, "alpha", env, capsys)
+    assert rc == 1
+    assert "alpha/(output file names):1 secret-ref:MY_TOKEN" in out
+    assert value not in out
+    assert not (source / "dist").exists()
+    assert value not in all_files_text(tmp_path)
+
+
+def test_token_in_scan_text_key_fails(tmp_path):
+    source = make_source(tmp_path)
+    token = fake_token()
+    body = (
+        "return AdapterOutput(files={'ok.txt': 'fine'}, "
+        "scan_texts={'a-key': 'fine', 'key-' + %r: 'clean text'})" % token
+    )
+    write_adapter(source, "alpha", body)
+    result = run_build(source, ["alpha"], env={})
+    assert not result.ok
+    assert [(f.file, f.line, f.kind) for f in result.findings] == [
+        ("alpha/(scan text names)", 2, "pattern:ghp")
+    ]
+    assert token not in all_text(result)
+    assert not (source / "dist").exists()
+
+
+def test_ordinary_output_paths_build(tmp_path):
+    source = make_source(tmp_path)
+    body = (
+        "return AdapterOutput(files={'AGENTS.md': 'a', '.cursor/rules/x.mdc': 'b', "
+        "'docs/a/b.md': 'c'}, scan_texts={'session': 'fine'})"
+    )
+    write_adapter(source, "alpha", body)
+    result = run_build(source, ["alpha"], env={})
+    assert result.ok, result.errors
+    assert result.findings == []
+    assert set(dist_files(source, "alpha")) == {"AGENTS.md", ".cursor/rules/x.mdc", "docs/a/b.md"}
+
+
+def test_two_secrets_in_two_paths_give_two_findings(tmp_path):
+    source = make_source(tmp_path)
+    value = "s3cr3t-" + "value-for-tests"
+    (source / "secrets.ref").write_text("MY_TOKEN=env\n", encoding="utf-8")
+    body = (
+        "return AdapterOutput(files={'a/plain.md': 'x', 'b-' + %r + '/x.md': 'x', "
+        "'c-' + %r + '.md': 'x'})" % (fake_token(), value)
+    )
+    write_adapter(source, "alpha", body)
+    result = run_build(source, ["alpha"], env={"MY_TOKEN": value})
+    assert not result.ok
+    assert [(f.file, f.line, f.kind) for f in result.findings] == [
+        ("alpha/(output file names)", 2, "pattern:ghp"),
+        ("alpha/(output file names)", 3, "secret-ref:MY_TOKEN"),
+    ]
+    text = all_text(result)
+    assert fake_token() not in text and value not in text
+    assert not (source / "dist").exists()

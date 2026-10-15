@@ -221,3 +221,20 @@ def test_stale_docs_removed(tmp_path):
     assert second.ok, second.errors
     assert not (out_dir(src) / "docs").exists()
     assert (out_dir(src) / "project-instructions.md").exists()
+
+
+def test_secret_in_external_file_name_fails_build(tmp_path):
+    src = make_source(tmp_path)
+    ext = src / "external_acme"
+    token = "gh" + "p_" + "Q7" * 18  # built at runtime; no token literal in the repo
+    (ext / ("notes-%s.md" % token)).write_text(
+        "---\nscope: external\n---\nclean body\n", encoding="utf-8"
+    )
+    result = run_build(src, [TARGET], env={LAYERS_VAR: str(ext)})
+    assert not result.ok
+    assert ("%s/(output file names)" % TARGET, "pattern:ghp") in [
+        (f.file, f.kind) for f in result.findings
+    ]
+    text = "\n".join(result.errors + result.warnings + [repr(f) for f in result.findings])
+    assert token not in text
+    assert not (src / "dist").exists()
