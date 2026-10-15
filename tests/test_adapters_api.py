@@ -25,6 +25,12 @@ def build(ctx):
 '''
 
 
+@pytest.fixture(autouse=True)
+def no_builtins(monkeypatch):
+    # Built-in adapters are registered in BUILTIN; these tests use drop-ins only.
+    monkeypatch.setattr(adapters_pkg, "BUILTIN", ())
+
+
 def write_dropin(source: Path, filename: str, text: str) -> Path:
     folder = source / "adapters"
     folder.mkdir(parents=True, exist_ok=True)
