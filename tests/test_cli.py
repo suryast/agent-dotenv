@@ -4,6 +4,7 @@ import os
 import re
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -157,6 +158,46 @@ def test_init_refuses_nonempty_or_relative_layer(tmp_path, capsys):
     assert main(["init", "--source", str(source), "--layer", str(a_file)], {}, tmp_path) == 1
     # a refused layer changes nothing in the source folder
     assert not source.exists()
+
+
+def test_init_layer_with_dotdot_cannot_overwrite_an_existing_layer(tmp_path, capsys):
+    source = tmp_path / "proj"
+    layer = tmp_path / "L"
+    layer.mkdir()
+    (layer / "glossary.md").write_text("my edited glossary", encoding="utf-8")
+    sneaky = "%s/nothere/../L" % tmp_path
+    assert main(["init", "--source", str(source), "--layer", sneaky], {}, tmp_path) == 1
+    assert "not empty" in capsys.readouterr().out
+    assert (layer / "glossary.md").read_text(encoding="utf-8") == "my edited glossary"
+    assert not (tmp_path / "nothere").exists()
+
+
+def test_init_layer_records_a_normalised_path_without_duplicates(tmp_path):
+    source = tmp_path / "proj"
+    (source / "local").mkdir(parents=True)
+    layer = tmp_path / "L"
+    layer.mkdir()
+    (source / "local" / "paths.env").write_text("AGENT_DOTENV_LAYERS=%s\n" % layer, encoding="utf-8")
+    sneaky = "%s/x/../L" % tmp_path
+    assert main(["init", "--source", str(source), "--layer", sneaky], {}, tmp_path) == 0
+    assert read_paths_env(source / "local" / "paths.env")["AGENT_DOTENV_LAYERS"] == str(layer)
+    other = tmp_path / "M" / ".." / "N"
+    assert main(["init", "--source", str(source), "--layer", str(other)], {}, tmp_path) == 0
+    value = read_paths_env(source / "local" / "paths.env")["AGENT_DOTENV_LAYERS"]
+    assert value == "%s:%s" % (layer, tmp_path / "N")
+
+
+def test_init_twice_keeps_every_file(tmp_path):
+    source = tmp_path / "proj"
+    layer = tmp_path / "acme"
+    assert main(["init", "--source", str(source), "--layer", str(layer)], {}, tmp_path) == 0
+    edited = [source / "base" / "rules.md", source / "secrets.ref", source / "local" / "paths.env"]
+    for path in edited:
+        path.write_text(path.read_text(encoding="utf-8") + "# mine\n", encoding="utf-8")
+    before = {p: p.read_bytes() for p in files_under(source)}
+    assert main(["init", "--source", str(source)], {}, tmp_path) == 0
+    assert {p: p.read_bytes() for p in files_under(source)} == before
+    assert (layer / "glossary.md").is_file()
 
 
 # --- build --------------------------------------------------------------
@@ -336,6 +377,44 @@ def test_doctor_fails_when_an_external_layer_file_is_newer(tmp_path, capsys):
     capsys.readouterr()
     assert main(["doctor", "--source", str(source)], {}, tmp_path) == 1
     assert "dist" in capsys.readouterr().out
+
+
+def test_doctor_ignores_hidden_files_and_folders(tmp_path, capsys):
+    source = make_ready_source(tmp_path)
+    layer = source / "external_acme"
+    (source / "local" / "paths.env").write_text(
+        "AGENT_DOTENV_LAYERS=%s\n" % layer, encoding="utf-8"
+    )
+    assert main(["build", "--source", str(source)], {}, tmp_path) == 0
+    newest = max(p.stat().st_mtime for p in files_under(source / "dist"))
+    (layer / ".git").mkdir()
+    for hidden in (layer / ".git" / "FETCH_HEAD", source / "base" / ".DS_Store"):
+        hidden.write_text("x", encoding="utf-8")
+        os.utime(hidden, (newest + 100, newest + 100))
+    capsys.readouterr()
+    assert main(["doctor", "--source", str(source)], {}, tmp_path) == 0
+    assert "FAIL" not in capsys.readouterr().out
+    os.utime(source / "base" / "rules.md", (newest + 100, newest + 100))
+    assert main(["doctor", "--source", str(source)], {}, tmp_path) == 1
+
+
+def test_doctor_fails_after_a_partial_rebuild_and_names_the_stale_folder(tmp_path, capsys):
+    source = make_ready_source(tmp_path)
+    names = sorted(discover(source))
+    assert main(["build", "--source", str(source)], {}, tmp_path) == 0
+    now = time.time()
+    for path in files_under(source / "dist"):
+        os.utime(path, (now - 100, now - 100))
+    os.utime(source / "base" / "rules.md", (now - 50, now - 50))
+    assert main(["build", "--source", str(source), "--target", names[0]], {}, tmp_path) == 0
+    capsys.readouterr()
+    assert main(["doctor", "--source", str(source)], {}, tmp_path) == 1
+    fails = [line for line in capsys.readouterr().out.splitlines() if line.startswith("FAIL")]
+    assert any("dist/%s" % names[1] in line for line in fails)
+    assert not any("dist/%s" % names[0] in line for line in fails)
+    assert main(["build", "--source", str(source)], {}, tmp_path) == 0
+    capsys.readouterr()
+    assert main(["doctor", "--source", str(source)], {}, tmp_path) == 0
 
 
 def test_doctor_fails_before_the_first_build(tmp_path, capsys):

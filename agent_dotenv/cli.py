@@ -33,13 +33,31 @@ def _source_dir(args: argparse.Namespace, env: Mapping[str, str], cwd: Path) -> 
 
 
 def _files_under(root: Path) -> List[Path]:
+    """Files under `root`, skipping hidden entries (a name that starts with a dot).
+
+    The layer loader also skips hidden folders, so build and doctor agree on what a source is."""
     found: List[Path] = []
     if not root.is_dir():
         return found
     for dirpath, dirs, names in os.walk(str(root)):
-        dirs[:] = [d for d in dirs if d != "__pycache__"]
-        found.extend(Path(dirpath) / name for name in names if (Path(dirpath) / name).is_file())
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+        found.extend(
+            Path(dirpath) / name
+            for name in names
+            if not name.startswith(".") and (Path(dirpath) / name).is_file()
+        )
     return found
+
+
+def _write_new(path: Path, text: str) -> bool:
+    """Create `path` with `text`. Return False and change nothing when it already exists."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(str(path), "x", encoding="utf-8") as handle:
+            handle.write(text)
+    except FileExistsError:
+        return False
+    return True
 
 
 def _set_paths_env_value(path: Path, key: str, value: str) -> None:
@@ -58,34 +76,29 @@ def cmd_init(args: argparse.Namespace, env: Mapping[str, str], cwd: Path) -> int
     source = _resolve_dir(args.source, cwd) if args.source else cwd
     layer: Optional[Path] = None
     if args.layer:
-        layer = Path(os.path.expanduser(args.layer))
-        if not layer.is_absolute():
+        expanded = os.path.expanduser(args.layer)
+        if not os.path.isabs(expanded):
             print("error: --layer must be an absolute path, got %r" % args.layer)
             return 1
+        layer = Path(os.path.abspath(expanded))  # removes ".." so the checks see the real folder
         if layer.exists() and (not layer.is_dir() or any(layer.iterdir())):
             print("error: %s is not empty; refusing to write the layer template into it" % layer)
             return 1
 
     for rel, text in SOURCE_FILES.items():
         target = source / rel
-        if target.exists():
-            print("kept    %s" % target)
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-        print("created %s" % target)
+        print("%s %s" % ("created" if _write_new(target, text) else "kept   ", target))
     paths_env = source / PATHS_ENV
-    if not paths_env.exists():
-        paths_env.write_text((source / PATHS_ENV_EXAMPLE).read_text(encoding="utf-8"), encoding="utf-8")
+    example = (source / PATHS_ENV_EXAMPLE).read_text(encoding="utf-8")
+    if _write_new(paths_env, example):
         print("created %s" % paths_env)
 
     if layer is not None:
         for rel, text in LAYER_FILES.items():
-            target = layer / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text, encoding="utf-8")
+            _write_new(layer / rel, text)
         entries = [e for e in read_paths_env(paths_env).get(LAYERS_VAR, "").split(":") if e.strip()]
-        if str(layer) not in entries:
+        known = [os.path.abspath(os.path.expanduser(e)) for e in entries]
+        if str(layer) not in known:
             entries.append(str(layer))
         _set_paths_env_value(paths_env, LAYERS_VAR, ":".join(entries))
         print("created layer %s and recorded it in %s" % (layer, paths_env))
@@ -197,8 +210,15 @@ def cmd_doctor(args: argparse.Namespace, env: Mapping[str, str], cwd: Path) -> i
         except AdapterError as exc:
             report(False, "adapters do not load: %s" % exc)
 
-    dist_files = _files_under(source / DIST_DIR)
-    if not dist_files:
+    dist_root = source / DIST_DIR
+    # Newest file time of each adapter folder. A folder without files has no build output.
+    folder_times = {}
+    if dist_root.is_dir():
+        for folder in sorted(p for p in dist_root.iterdir() if p.is_dir()):
+            times = [f.stat().st_mtime for f in _files_under(folder)]
+            if times:
+                folder_times[folder.name] = max(times)
+    if not folder_times:
         where = "" if source == cwd else " --source %s" % source
         report(False, "dist/ has no build output; run: agent-dotenv build%s" % where)
     else:
@@ -209,11 +229,15 @@ def cmd_doctor(args: argparse.Namespace, env: Mapping[str, str], cwd: Path) -> i
         for layer_dir in externals:
             source_files.extend(_files_under(layer_dir))
         newest_source = max((f.stat().st_mtime for f in source_files), default=0.0)
-        newest_dist = max(f.stat().st_mtime for f in dist_files)
-        if newest_dist >= newest_source:
-            report(True, "dist/ is newer than the sources")
+        stale = sorted(name for name, newest in folder_times.items() if newest < newest_source)
+        if not stale:
+            report(True, "every folder in dist/ is newer than the sources")
         else:
-            report(False, "dist/ is older than the sources; run build again")
+            report(
+                False,
+                "dist/ is older than the sources in: %s; run build again"
+                % ", ".join("dist/%s" % name for name in stale),
+            )
     return 1 if failures else 0
 
 
