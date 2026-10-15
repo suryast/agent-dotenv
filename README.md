@@ -9,6 +9,13 @@ Write your agent rules, identity and skills once. Build them for any coding agen
 - **Secret-safe.** Files marked `sensitive` never reach an output. Every output is scanned for secrets before it is kept.
 - **Small.** Python 3.9 or newer, standard library only. A build uses no network and writes only under `dist/`.
 
+## Overview video
+
+A 30-second overview of the layers, filters, adapters and the secret scan.
+
+<!-- Paste the GitHub upload link of the MP4 on the next line. Remove this comment and the placeholder text. -->
+https://github.com/user-attachments/assets/REPLACE-WITH-UPLOAD-ID
+
 ## Install
 
 You need Python 3.9 or newer. There is no PyPI release in v1.
