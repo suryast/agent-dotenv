@@ -92,3 +92,7 @@ python3 -m pytest -q
 ```
 
 See [CLAUDE.md](CLAUDE.md) for the architecture and code constraints.
+
+## Licence
+
+[MIT](LICENSE)
