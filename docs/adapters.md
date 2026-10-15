@@ -49,7 +49,7 @@ agent-dotenv build --target plain-text
 built plain-text: 1 file(s) in ~/my-agent-env/dist/plain-text
 ```
 
-The file is `dist/plain-text/notes.txt`. A frontmatter line `targets: [plain-text]` now limits a file to this adapter. `agent-dotenv doctor` lists every drop-in by path.
+The file is `dist/plain-text/notes.txt`. If you changed a source since the last full build, `agent-dotenv doctor` now fails with "dist/ is older than the sources" for the other adapters until you run a full `build`. A frontmatter line `targets: [plain-text]` now limits a file to this adapter. `agent-dotenv doctor` lists every drop-in by path.
 
 ## BuildContext
 
@@ -73,7 +73,7 @@ The data types:
 | `Meta` | `scope`, `mode`, `targets` (`None` means all adapters), `description` |
 | `Skill` | `name`, `files` (`dict` of relative path to `bytes`), `layer` |
 
-Import them from `agent_dotenv.adapters_api` (`BuildContext`, `AdapterOutput`) and `agent_dotenv.layers` (`Source`, `Skill`).
+Import them from `agent_dotenv.adapters_api` (`BuildContext`, `AdapterOutput`), `agent_dotenv.layers` (`Source`, `Skill`) and `agent_dotenv.frontmatter` (`Meta`).
 
 ## AdapterOutput
 

@@ -37,10 +37,10 @@ The `description` line of an external file is printed in the Claude Code session
 
 The build scans every output before it keeps anything. It fails on:
 
-- A GitHub token (`ghp_` followed by 36 letters or digits, or `github_pat_`).
-- A Slack token (`xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, `xoxs-`).
-- An AWS access key id (`AKIA` followed by 16 capitals or digits).
-- A key that starts with `sk-` and has 20 or more characters. The character before `sk-` must not be a letter or digit, so `task-management-...` does not match.
+- A GitHub token: `ghp_` followed by 36 letters or digits, or `github_pat_` followed by 20 or more letters, digits or `_`.
+- A Slack token: `xoxb-`, `xoxa-`, `xoxp-`, `xoxr-` or `xoxs-`, followed by 10 or more letters, digits or `-`.
+- An AWS access key id: `AKIA` followed by 16 capitals or digits.
+- A key that starts with `sk-`, followed by 20 or more letters, digits, `_` or `-`. The character before `sk-` must not be a letter or digit, so `task-management-...` does not match.
 - A private key header (`-----BEGIN ... PRIVATE KEY-----`).
 - The literal value of any environment variable named in `secrets.ref`.
 
@@ -53,7 +53,9 @@ error: secret scan found 1 problem(s); no output was kept
 agents-md/AGENTS.md:5 pattern:ghp
 ```
 
-The kind is `pattern:<name>` or `secret-ref:<NAME>`. On a finding the build exits 1 and deletes the output of every adapter requested in that run. Error and warning text is also redacted.
+The kind is `pattern:<name>` or `secret-ref:<NAME>`. On a finding the build exits 1 and deletes the output of every adapter requested in that run.
+
+`build` never prints a secret value. Error text, warning text and the file paths in findings are redacted: a `secrets.ref` value or a token in a path is shown as `[redacted]`.
 
 ### What the scan does not catch
 
@@ -69,6 +71,10 @@ The kind is `pattern:<name>` or `secret-ref:<NAME>`. On a finding the build exit
 The scan is a safety net. Keep secrets out of the source folder in the first place.
 
 ## What a failed build deletes
+
+A failed build deletes `dist/<name>/` for every adapter requested in that run. With `all`, that is every adapter, once the adapters have loaded. It keeps the output of adapters that were not requested, and it keeps other folders in `dist/`.
+
+When a target name is unknown, nothing is built and no output is deleted. The build exits 1 and lists the known names.
 
 Known limit: if `secrets.ref` is invalid or a drop-in adapter does not load, the build cannot check the target names yet, so it deletes `dist/<name>/` for every `--target` name, and a mistyped name that equals a folder you made yourself in `dist/` deletes that folder.
 
