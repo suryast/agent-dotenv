@@ -5,7 +5,7 @@ loader/session_start.py, beside flat copies of frontmatter.py and layers.py.
 Run as a script, the sibling modules are imported flat from the script's
 folder. Imported as a package module (tests, build), they come from
 agent_dotenv. External layer files are never printed in full: each one
-becomes a single `<root>/<key>: <description>` index line.
+becomes a single `<path>: <description>` index line.
 
 Python 3.9 compatible, stdlib only.
 """
@@ -17,7 +17,7 @@ import os
 import sys
 import warnings as _warnings
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Sequence
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 _IMPORT_ERROR = None  # type: Optional[BaseException]
 try:
@@ -26,19 +26,24 @@ try:
         from ...layers import (
             Source,
             external_layer_dirs,
+            filter_sources,
             load_layer,
             read_paths_env,
             resolve_filtered,
         )
     except ImportError:  # run as a script from the plugin's loader/ folder
+        # `python3 -I` and PYTHONSAFEPATH leave the script folder off sys.path.
+        # Put it first, so the bundled copies win over any other module.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
         from layers import (  # type: ignore
             Source,
             external_layer_dirs,
+            filter_sources,
             load_layer,
             read_paths_env,
             resolve_filtered,
         )
-except Exception as exc:  # a broken bundle must not block the session
+except BaseException as exc:  # a broken bundle must not block the session
     _IMPORT_ERROR = exc
 
 NAME = "claude-code"
@@ -47,18 +52,24 @@ CONTEXT_KEYS = ("rules.md", "identity.md")
 LOCAL_KEYS = ("VAULT_PATH", "DEVICE_NAME")
 
 
-def _root_for(key: str, external_roots: Sequence[Path]) -> Path:
-    """The last root that holds `key` (later layers win), else the last root."""
-    for root in reversed(list(external_roots)):
-        if os.path.isfile(os.path.join(str(root), key)):
-            return Path(root)
-    return Path(list(external_roots)[-1])
+def collect_index(roots: Sequence[Path]) -> List[Tuple[str, str]]:
+    """One (path, description) entry per external file, sorted by path.
+
+    Each layer is loaded leniently and filtered for this adapter. A later root
+    wins per relative key, so a dropped file falls back to an earlier layer."""
+    winners = {}  # type: Dict[str, Tuple[str, str]]
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")  # external skills/ folders are ignored
+        for root in roots:
+            sources, _ = load_layer(Path(root), "external", strict=False)
+            for key, source in filter_sources(sources, NAME, True).items():
+                winners[key] = (str(Path(root) / key), source.meta.description)
+    return sorted(winners.values())
 
 
 def render_context(
     base: Mapping[str, Source],
-    external_index: Mapping[str, Source],
-    external_roots: Sequence[Path],
+    index: Sequence[Tuple[str, str]],
     local_values: Mapping[str, str],
     warnings: Sequence[str],
 ) -> str:
@@ -67,12 +78,11 @@ def render_context(
         source = base.get(key)
         if source is not None and source.body.strip():
             sections.append(source.body.strip())
-    if external_index and external_roots:
-        lines = []
-        for key in sorted(external_index):
-            path = "%s/%s" % (str(_root_for(key, external_roots)).rstrip("/"), key)
-            description = external_index[key].meta.description
-            lines.append("%s: %s" % (path, description) if description else path)
+    if index:
+        lines = [
+            "%s: %s" % (path, description) if description else path
+            for path, description in sorted(index)
+        ]
         sections.append("\n".join(lines))
     values = ["%s=%s" % (k, local_values[k]) for k in LOCAL_KEYS if local_values.get(k)]
     if values:
@@ -96,19 +106,15 @@ def build_text(env: Mapping[str, str], root: Path) -> str:
         paths_env = read_paths_env(home / "local" / "paths.env")
 
     roots, layer_warnings = external_layer_dirs(env, paths_env)
-    externals = [load_layer(path, "external", strict=False) for path in roots]
-    allowed = bool(roots)
     # Rules and identity come from base and local only. External files give
-    # index lines; a key that local overrides is not an external file.
-    sources, _ = resolve_filtered([base, local], NAME, allowed)
-    everything, _ = resolve_filtered([base] + externals + [local], NAME, allowed)
-    index = {k: s for k, s in everything.items() if s.layer == "external"}
+    # index lines, never bodies.
+    sources, _ = resolve_filtered([base, local], NAME, bool(roots))
     local_values = {}  # type: Dict[str, str]
     for key in LOCAL_KEYS:
         value = env.get(key) or paths_env.get(key)
         if value:
             local_values[key] = value
-    return render_context(sources, index, roots, local_values, layer_warnings)
+    return render_context(sources, collect_index(roots), local_values, layer_warnings)
 
 
 def main(
@@ -122,7 +128,7 @@ def main(
         parser.add_argument("--format", choices=("json", "plain"), default="json")
         args, _unknown = parser.parse_known_args(None if argv is None else list(argv))
         fmt = args.format
-    except (Exception, SystemExit):
+    except BaseException:
         fmt = "json"
     try:
         if _IMPORT_ERROR is not None:
@@ -132,7 +138,7 @@ def main(
         with _warnings.catch_warnings():
             _warnings.simplefilter("ignore")
             text = build_text(env, root)
-    except Exception as exc:  # the hook must never block a session
+    except BaseException as exc:  # the hook must never block a session
         text = "%s: context loader failed (%s); continuing without it" % (
             TOOL,
             type(exc).__name__,
@@ -147,9 +153,22 @@ def main(
     return 0
 
 
+def _flush_or_discard_stdout() -> None:
+    """Flush stdout now. If that fails (a closed pipe), send what is left to
+    the null device, so the flush at interpreter exit cannot change the exit code."""
+    try:
+        sys.stdout.flush()
+    except BaseException:
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except BaseException:
+            pass
+
+
 if __name__ == "__main__":
     try:
         main()
     except BaseException:  # last line of defence: exit 0 whatever happens
         pass
+    _flush_or_discard_stdout()
     sys.exit(0)

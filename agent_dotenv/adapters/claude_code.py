@@ -1,9 +1,10 @@
 """claude-code adapter: a Claude Code plugin with skills and a SessionStart hook.
 
 The plugin holds no external layer text. The hook finds the external layers at
-session start and prints one index line per external file. The adapter uses
-`ctx.external_index` only to render the session context at build time, so the
-secret scan covers what the hook prints.
+session start and prints one index line per external file. At build time the
+adapter renders the same session context from `ctx.external_roots` with the
+hook's own functions, so the secret scan covers what the hook prints. It reads
+only folders named in ctx (`source_dir`, `external_roots`).
 
 Python 3.9 compatible, stdlib only.
 """
@@ -58,10 +59,11 @@ def build(ctx: BuildContext) -> AdapterOutput:
     for key, source in layers.filter_sources(base_sources, NAME, False).items():
         files["loader/base/%s" % key] = serialize(source.meta, source.body)
 
+    # The index comes from the same function the hook runs, over the roots
+    # named in ctx. ctx.external_index is not used.
     context = session_start.render_context(
         {k: s for k, s in ctx.sources.items() if s.layer != "external"},
-        ctx.external_index,
-        ctx.external_roots,
+        session_start.collect_index(ctx.external_roots),
         ctx.local_values,
         [],
     )

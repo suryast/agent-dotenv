@@ -5,13 +5,13 @@ import os
 import subprocess
 import sys
 import textwrap
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import agent_dotenv
 from agent_dotenv.adapters import claude_code
+from agent_dotenv.adapters_api import BuildContext
 from agent_dotenv.adapters.claude_code_loader import session_start
 from agent_dotenv.frontmatter import parse
 from agent_dotenv.layers import load_layer
@@ -65,12 +65,18 @@ def plugin_files(plugin: Path) -> dict:
     }
 
 
-def run_hook(plugin: Path, cwd: Path, env: dict, *args: str) -> subprocess.CompletedProcess:
+def hook_command(plugin: Path, args=(), flags=()) -> list:
+    return [sys.executable] + list(flags) + [str(plugin / "loader" / "session_start.py")] + list(args)
+
+
+def run_hook(
+    plugin: Path, cwd: Path, env: dict, *args: str, flags=()
+) -> subprocess.CompletedProcess:
     cwd.mkdir(parents=True, exist_ok=True)
     full_env = {"PATH": CLEAN_PATH}
     full_env.update(env)
     return subprocess.run(
-        [sys.executable, str(plugin / "loader" / "session_start.py")] + list(args),
+        hook_command(plugin, args, flags),
         cwd=str(cwd),
         env=full_env,
         capture_output=True,
@@ -341,11 +347,54 @@ def test_hook_exits_zero_on_unexpected_exception(tmp_path, capsys, monkeypatch):
     assert "kaboom" not in out
 
 
-def test_hook_exits_zero_when_a_bundled_module_fails_to_import(tmp_path):
+@pytest.mark.parametrize("error", ["RuntimeError('broken')", "SystemExit(3)"])
+def test_hook_exits_zero_when_a_bundled_module_fails_to_import(tmp_path, error):
     plugin = build_plugin(make_source(tmp_path), {})
-    (plugin / "loader" / "layers.py").write_text("raise RuntimeError('broken')\n", encoding="utf-8")
+    (plugin / "loader" / "layers.py").write_text("raise %s\n" % error, encoding="utf-8")
     context = hook_context(run_hook(plugin, tmp_path / "elsewhere", {}))
-    assert context == FAILURE_LINE
+    kind = error.split("(")[0]
+    assert context == FAILURE_LINE.replace("RuntimeError", kind)
+
+
+@pytest.mark.parametrize("fmt", [(), ("--format", "plain")])
+def test_hook_exits_zero_when_stdout_is_closed(tmp_path, fmt):
+    plugin = build_plugin(make_source(tmp_path), {})
+    read_end, write_end = os.pipe()
+    os.close(read_end)  # nobody reads: every write gives EPIPE
+    try:
+        proc = subprocess.run(
+            hook_command(plugin, fmt),
+            cwd=str(tmp_path),
+            env={"PATH": CLEAN_PATH},
+            stdout=write_end,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    finally:
+        os.close(write_end)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr == ""
+
+
+def test_hook_runs_in_isolated_mode(tmp_path):
+    source = make_source(tmp_path)
+    plugin = build_plugin(source, {})
+    env = {LAYERS_VAR: str(source / "external_acme")}
+    context = hook_context(run_hook(plugin, tmp_path / "elsewhere", env, flags=("-I",)))
+    assert context.startswith("FIXTURE_RULE: be brief.")
+    assert "glossary.md: Acme terms" in context
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="PYTHONSAFEPATH exists only in Python 3.11 and later"
+)
+def test_hook_runs_with_pythonsafepath(tmp_path):
+    source = make_source(tmp_path)
+    plugin = build_plugin(source, {})
+    env = {"PYTHONSAFEPATH": "1", LAYERS_VAR: str(source / "external_acme")}
+    context = hook_context(run_hook(plugin, tmp_path / "elsewhere", env))
+    assert context.startswith("FIXTURE_RULE: be brief.")
+    assert "glossary.md: Acme terms" in context
 
 
 def test_hook_survives_decoy_frontmatter_module_in_cwd_and_pythonpath(tmp_path):
@@ -415,16 +464,105 @@ def test_hook_hides_sensitive_base_text_behind_local_append(tmp_path, capsys):
     assert "local identity" in out
 
 
-def test_hook_index_skips_external_key_overridden_by_local(tmp_path, capsys):
+# --- run-time confidentiality ------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["replace", "append"])
+def test_hook_never_prints_external_rules_or_identity_body(tmp_path, mode):
+    source = make_source(tmp_path)
+    layer = source / "external_acme"
+    write_md(layer / "rules.md", "---\nscope: external\nmode: %s\n---\nEXT_RULES_BODY_1\n" % mode)
+    write_md(
+        layer / "identity.md",
+        "---\nscope: personal\nmode: %s\n---\nEXT_IDENTITY_BODY_2\n" % mode,
+    )
+    plugin = build_plugin(source, {LAYERS_VAR: str(layer)})
+    proc = run_hook(plugin, tmp_path / "elsewhere", {LAYERS_VAR: str(layer)}, "--format", "plain")
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    assert "EXT_RULES_BODY_1" not in out
+    assert "EXT_IDENTITY_BODY_2" not in out
+    assert "FIXTURE_RULE: be brief." in out
+    assert "FIXTURE_IDENTITY: uses a terminal." in out
+    lines = out.splitlines()
+    for key in ("rules.md", "identity.md"):
+        assert [line for line in lines if key in line] == [str(layer / key)]
+
+
+def test_hook_hides_local_external_scope_file_without_external_layer(tmp_path):
     source = make_source(tmp_path)
     plugin = build_plugin(source, {})
-    write_md(source / "local" / "glossary.md", "---\nscope: personal\n---\nmine\n")
-    env = {LAYERS_VAR: str(source / "external_acme")}
-    rc = session_start.main(["--format", "plain"], env, root=plugin / "loader")
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "glossary.md" not in out
-    assert "people/a.md: Alice" in out
+    write_md(source / "local" / "rules.md", "---\nscope: external\n---\nLOCAL_EXT_BODY_5\n")
+    proc = run_hook(plugin, tmp_path / "elsewhere", {}, "--format", "plain")
+    assert proc.returncode == 0, proc.stderr
+    assert "LOCAL_EXT_BODY_5" not in proc.stdout
+    assert proc.stdout.startswith("FIXTURE_RULE: be brief.")
+
+
+# --- the external index -------------------------------------------------------
+
+
+def two_layers(tmp_path):
+    e1 = tmp_path / "e1"
+    e2 = tmp_path / "e2"
+    write_md(e1 / "glossary.md", "---\nscope: external\ndescription: Acme terms\n---\nEXT_MARKER_91bc\n")
+    write_md(e2 / "glossary.md", "---\nscope: sensitive\ndescription: hidden\n---\nSENS_MARKER_7f3a\n")
+    return e1, e2
+
+
+def build_scan_text(source: Path, roots) -> str:
+    ctx = BuildContext(
+        sources={},
+        skills={},
+        external_index={},
+        external_roots=tuple(roots),
+        local_values={},
+        source_dir=source,
+        options={},
+    )
+    return claude_code.build(ctx).scan_texts["session-context"]
+
+
+def test_index_falls_back_to_earlier_layer_when_later_file_is_dropped(tmp_path):
+    source = make_source(tmp_path)
+    e1, e2 = two_layers(tmp_path)
+    plugin = build_plugin(source, {})
+    env = {LAYERS_VAR: "%s:%s" % (e1, e2)}
+    proc = run_hook(plugin, tmp_path / "elsewhere", env, "--format", "plain")
+    assert proc.returncode == 0, proc.stderr
+    for text in (proc.stdout, build_scan_text(source, [e1, e2])):
+        assert "%s: Acme terms" % (e1 / "glossary.md") in text.splitlines()
+        assert str(e2) not in text
+        assert "hidden" not in text
+
+
+def test_collect_index_returns_paths_of_the_winning_layer(tmp_path):
+    e1 = tmp_path / "e1"
+    e2 = tmp_path / "e2"
+    write_md(e1 / "x.md", "---\nscope: external\ndescription: one\n---\nbody\n")
+    write_md(e1 / "only-first.md", "---\nscope: external\n---\nbody\n")
+    write_md(e2 / "x.md", "---\nscope: personal\ndescription: two\n---\nbody\n")
+    assert session_start.collect_index([e1, e2]) == [
+        (str(e1 / "only-first.md"), ""),
+        (str(e2 / "x.md"), "two"),
+    ]
+
+
+def test_collect_index_skips_sensitive_and_malformed_files(tmp_path):
+    e1 = tmp_path / "e1"
+    write_md(e1 / "ok.md", "---\nscope: external\ndescription: fine\n---\nbody\n")
+    write_md(e1 / "secret.md", "---\nscope: sensitive\ndescription: nope\n---\nbody\n")
+    (e1 / "bad.md").write_text("no frontmatter at all\n", encoding="utf-8")
+    (e1 / "bin.md").write_bytes(b"---\nscope: external\n---\n\xff\xfe\n")
+    assert session_start.collect_index([e1]) == [(str(e1 / "ok.md"), "fine")]
+
+
+def test_collect_index_ignores_external_skills_without_warning(tmp_path, recwarn):
+    e1 = tmp_path / "e1"
+    write_md(e1 / "ok.md", "---\nscope: external\n---\nbody\n")
+    write_md(e1 / "skills" / "x" / "SKILL.md", "skill\n")
+    assert session_start.collect_index([e1]) == [(str(e1 / "ok.md"), "")]
+    assert len(recwarn) == 0
 
 
 # --- render_context ---------------------------------------------------------
@@ -434,16 +572,12 @@ def fixture_base():
     return load_layer(FIXTURE_SOURCE / "base", "base")[0]
 
 
-def fixture_external():
-    return load_layer(FIXTURE_SOURCE / "external_acme", "external")[0]
-
-
 def test_render_context_order():
     root = FIXTURE_SOURCE / "external_acme"
+    index = [(str(root / "people" / "a.md"), "Alice"), (str(root / "glossary.md"), "Acme terms")]
     text = session_start.render_context(
         fixture_base(),
-        fixture_external(),
-        [root],
+        index,
         {"DEVICE_NAME": "mac", "VAULT_PATH": "/vault"},
         ["first warning", "second warning"],
     )
@@ -458,30 +592,12 @@ def test_render_context_order():
     ]
     assert order == sorted(order)
     assert text.splitlines()[-2:] == ["first warning", "second warning"]
-    assert "EXT_MARKER_91bc" not in text
-    assert "Alice works" not in text
     assert "SENS_MARKER_7f3a" not in text  # notes.md is not rules or identity
 
 
 def test_render_context_path_only_without_description():
-    root = FIXTURE_SOURCE / "external_acme"
-    stripped = {
-        k: replace(v, meta=replace(v.meta, description="")) for k, v in fixture_external().items()
-    }
-    text = session_start.render_context({}, stripped, [root], {}, [])
-    assert "%s/people/a.md" % root in text.splitlines()
-    assert "people/a.md:" not in text
-
-
-def test_render_context_names_the_root_that_holds_the_file(tmp_path):
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    write_md(first / "only-first.md", "---\nscope: external\ndescription: one\n---\nx\n")
-    write_md(second / "only-second.md", "---\nscope: external\ndescription: two\n---\nx\n")
-    index = dict(load_layer(first, "external")[0])
-    index.update(load_layer(second, "external")[0])
-    lines = session_start.render_context({}, index, [first, second], {}, []).splitlines()
-    assert lines == ["%s/only-first.md: one" % first, "%s/only-second.md: two" % second]
+    text = session_start.render_context({}, [("/co/people/a.md", "")], {}, [])
+    assert text == "/co/people/a.md"
 
 
 def test_adapter_constants():
