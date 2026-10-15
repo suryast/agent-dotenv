@@ -13,8 +13,8 @@ Write your agent rules, identity and skills once. Build them for any coding agen
 
 A 30-second overview of the layers, filters, adapters and the secret scan.
 
-<!-- Paste the GitHub upload link of the MP4 on the next line. Remove this comment and the placeholder text. -->
-https://github.com/user-attachments/assets/REPLACE-WITH-UPLOAD-ID
+https://github.com/user-attachments/assets/a80c9ca1-8141-426a-b585-f80cbf4cdce8
+
 
 ## Install
 
