@@ -1,4 +1,0 @@
-
-## Licence
-
-[MIT](LICENSE)
