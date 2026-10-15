@@ -587,3 +587,59 @@ def test_refusing_adapter_gets_no_external_layer_files(tmp_path):
     assert "plain.md" in taker_sources and "plain.md" in taker_index
     assert "plain.md" not in refuser_sources
     assert refuser_index == []
+
+
+# Final fix wave (A1, A2)
+
+
+def test_unknown_target_keeps_a_user_folder_of_that_name(tmp_path):
+    source = make_source(tmp_path)
+    write_adapter(source, "alpha", DUMP_BODY)
+    write_md(source / "dist" / "my-notes" / "keep.txt", "mine\n")
+    result = run_build(source, ["my-notes"], env={})
+    assert not result.ok
+    assert any("unknown target 'my-notes'" in e for e in result.errors)
+    assert (source / "dist" / "my-notes" / "keep.txt").is_file()
+
+
+def test_unknown_target_with_all_keeps_sibling_output(tmp_path):
+    source = make_source(tmp_path)
+    write_adapter(source, "alpha", DUMP_BODY)
+    plant_earlier_run(source, "alpha")
+    write_md(source / "dist" / "agents-md" / "AGENTS.md", "earlier output\n")
+    write_md(source / "dist" / "my-notes" / "keep.txt", "mine\n")
+    result = run_build(source, ["all", "my-notes"], env={})
+    assert not result.ok
+    assert any("my-notes" in e for e in result.errors)
+    assert (source / "dist" / "my-notes" / "keep.txt").is_file()
+    assert (source / "dist" / "agents-md" / "AGENTS.md").is_file()
+    assert (source / "dist" / "alpha" / "old.txt").is_file()
+
+
+def test_secret_ref_value_in_finding_path_is_redacted(tmp_path):
+    source = make_source(tmp_path)
+    value = "s3cr3t-" + "value-for-tests"
+    (source / "secrets.ref").write_text("MY_TOKEN=env\n", encoding="utf-8")
+    body = "return AdapterOutput(files={'dir-' + %r + '/x.txt': 'x ' + %r})" % (value, fake_token())
+    write_adapter(source, "alpha", body)
+    result = run_build(source, ["alpha"], env={"MY_TOKEN": value})
+    assert not result.ok
+    assert [(f.file, f.line, f.kind) for f in result.findings] == [
+        ("alpha/dir-[redacted]/x.txt", 1, "pattern:ghp")
+    ]
+    assert value not in all_text(result)
+
+
+def test_secret_ref_value_in_scan_text_key_is_redacted(tmp_path):
+    source = make_source(tmp_path)
+    value = "s3cr3t-" + "value-for-tests"
+    (source / "secrets.ref").write_text("MY_TOKEN=env\n", encoding="utf-8")
+    body = (
+        "return AdapterOutput(files={'ok.txt': 'fine'}, "
+        "scan_texts={'key-' + %r: 'x ' + %r})" % (value, fake_token())
+    )
+    write_adapter(source, "alpha", body)
+    result = run_build(source, ["alpha"], env={"MY_TOKEN": value})
+    assert not result.ok
+    assert [f.file for f in result.findings] == ["alpha/key-[redacted]"]
+    assert value not in all_text(result)

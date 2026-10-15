@@ -62,7 +62,7 @@ def _load_skills(root: Path, real_root: str, layer: str) -> Dict[str, Skill]:
             dirs[:] = sorted(d for d in dirs if not d.startswith("."))
             for name in names:
                 f = Path(dirpath) / name
-                if f.is_file() and _inside(real_root, f):
+                if not name.startswith(".") and f.is_file() and _inside(real_root, f):
                     files[f.relative_to(entry).as_posix()] = f.read_bytes()
         if files:
             skills[entry.name] = Skill(name=entry.name, files=files, layer=layer)
@@ -81,7 +81,7 @@ def load_layer(root: Path, layer: str, strict: bool = True) -> Layer:
             dirs[:] = [d for d in dirs if d != SKILLS_DIR]
         dirs[:] = sorted(d for d in dirs if not d.startswith("."))
         for name in sorted(names):
-            if not name.endswith(".md"):
+            if not name.endswith(".md") or name.startswith("."):
                 continue
             path = Path(dirpath) / name
             if not path.is_file() or not _inside(real_root, path):

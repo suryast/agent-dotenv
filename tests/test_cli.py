@@ -13,6 +13,7 @@ from agent_dotenv.adapters_api import discover
 from agent_dotenv.cli import main
 from agent_dotenv.frontmatter import parse
 from agent_dotenv.layers import external_layer_dirs, read_paths_env
+from agent_dotenv.pipeline import run_build
 from agent_dotenv.templates import LAYER_FILES, SOURCE_FILES
 
 from tests.conftest import make_source
@@ -113,6 +114,34 @@ def test_init_never_overwrites(tmp_path):
     assert (source / ".gitignore").read_text(encoding="utf-8") == "mine\n"
     assert (source / "base" / "identity.md").is_file()  # the missing files are still created
     assert main(["init", "--source", str(source)], {}, tmp_path) == 0
+
+
+def test_init_names_missing_gitignore_entries(tmp_path, capsys):
+    source = tmp_path / "proj"
+    source.mkdir()
+    (source / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    assert main(["init", "--source", str(source)], {}, tmp_path) == 0
+    assert (source / ".gitignore").read_text(encoding="utf-8") == "node_modules/\n"
+    notices = [line for line in capsys.readouterr().out.splitlines() if line.startswith("notice:")]
+    assert len(notices) == 1
+    assert ".gitignore" in notices[0]
+    assert "dist/" in notices[0] and "local/paths.env" in notices[0]
+
+    (source / ".gitignore").write_text("node_modules/\ndist/\n", encoding="utf-8")
+    assert main(["init", "--source", str(source)], {}, tmp_path) == 0
+    notices = [line for line in capsys.readouterr().out.splitlines() if line.startswith("notice:")]
+    assert len(notices) == 1
+    assert "local/paths.env" in notices[0] and "dist/" not in notices[0]
+
+
+def test_init_is_quiet_about_a_complete_gitignore(tmp_path, capsys):
+    source = tmp_path / "proj"
+    source.mkdir()
+    (source / ".gitignore").write_text("node_modules/\ndist/\nlocal/paths.env\n", encoding="utf-8")
+    assert main(["init", "--source", str(source)], {}, tmp_path) == 0
+    assert not [line for line in capsys.readouterr().out.splitlines() if line.startswith("notice:")]
+    assert main(["init", "--source", str(tmp_path / "fresh")], {}, tmp_path) == 0
+    assert not [line for line in capsys.readouterr().out.splitlines() if line.startswith("notice:")]
 
 
 def test_init_layer_creates_dir_and_records_it(tmp_path, capsys):
@@ -250,6 +279,36 @@ def test_build_fails_when_source_folder_is_missing(tmp_path, capsys):
     assert "error:" in capsys.readouterr().out
 
 
+NO_BASE_HINT = "has no base/ folder; run agent-dotenv init or pass --source"
+
+
+def test_build_fails_without_a_base_folder(tmp_path, capsys):
+    source = tmp_path / "proj"
+    source.mkdir()
+    (source / "unrelated.txt").write_text("x\n", encoding="utf-8")
+    assert main(["build", "--source", str(source)], {}, tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "error: %s %s" % (source, NO_BASE_HINT) in out
+    assert "built" not in out
+    assert not (source / "dist").exists()
+
+
+def test_doctor_fails_without_a_base_folder(tmp_path, capsys):
+    source = tmp_path / "proj"
+    source.mkdir()
+    assert main(["doctor", "--source", str(source)], {}, tmp_path) == 1
+    out = capsys.readouterr().out
+    assert any(line.startswith("FAIL") and NO_BASE_HINT in line for line in out.splitlines())
+
+
+def test_hidden_skill_file_reaches_no_output(tmp_path):
+    source = make_source(tmp_path)
+    (source / "base" / "skills" / "demo" / ".DS_Store").write_bytes(b"\x00\x01")
+    assert main(["build", "--source", str(source)], {}, tmp_path) == 0
+    assert files_under(source / "dist" / "agents-md" / "skills" / "demo")
+    assert not [p for p in files_under(source / "dist") if p.name == ".DS_Store"]
+
+
 def test_build_single_and_repeated_target(tmp_path):
     source = make_source(tmp_path)
     names = sorted(discover(source))
@@ -300,6 +359,46 @@ def test_build_prints_findings_without_values(tmp_path, capsys):
     assert TOKEN not in out
     assert SECRET_VALUE not in out
     assert files_under(source / "dist") == []
+
+
+def test_build_typo_target_keeps_earlier_output(tmp_path, capsys):
+    source = make_source(tmp_path)
+    good = ["build", "--source", str(source), "--target", "agents-md", "--target", "cursor"]
+    assert main(good, {}, tmp_path) == 0
+    capsys.readouterr()
+    typo = ["build", "--source", str(source), "--target", "agents-md", "--target", "cusror"]
+    assert main(typo, {}, tmp_path) == 1
+    assert "cusror" in capsys.readouterr().out
+    assert (source / "dist" / "agents-md" / "AGENTS.md").is_file()
+    assert files_under(source / "dist" / "cursor")
+
+
+LEAK_ADAPTER = '''\
+from agent_dotenv.adapters_api import AdapterOutput
+
+NAME = "leak"
+ACCEPTS_EXTERNAL = False
+
+
+def build(ctx):
+    return AdapterOutput(files={"dir-" + %r + "/x.txt": "x " + %r})
+'''
+
+
+def test_build_redacts_secret_in_finding_path(tmp_path, capsys):
+    source = make_source(tmp_path)
+    (source / "adapters").mkdir()
+    (source / "adapters" / "leak.py").write_text(LEAK_ADAPTER % (SECRET_VALUE, TOKEN), encoding="utf-8")
+    (source / "secrets.ref").write_text("MY_TOKEN=env\n", encoding="utf-8")
+    env = {"MY_TOKEN": SECRET_VALUE}
+    result = run_build(source, ["leak"], env)
+    assert [f.file for f in result.findings] == ["leak/dir-[redacted]/x.txt"]
+    capsys.readouterr()
+    assert main(["build", "--source", str(source), "--target", "leak"], env, tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "leak/dir-[redacted]/x.txt:1 pattern:ghp" in out
+    assert SECRET_VALUE not in out
+    assert TOKEN not in out
 
 
 def test_build_prints_adapter_lines_then_warnings(tmp_path, capsys):

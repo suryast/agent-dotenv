@@ -8,7 +8,7 @@ Guidance for contributors, human or AI, working in this repository.
 
 ## Commands
 
-Python 3.9, standard library only at runtime. Only `pytest` is needed for development.
+Python 3.9, standard library only at runtime. Only `pytest` is needed for development. Install it once with `python3 -m pip install pytest`.
 
 ```bash
 python3 -m pytest -q
@@ -22,11 +22,13 @@ python3 -m pytest tests/test_layers.py::test_name -q
 python3 -m agent_dotenv build --source examples/minimal
 ```
 
+This builds the example into `examples/minimal/dist/`. That folder is gitignored, and leaving it there is fine: `tests/test_example.py` checks only the files that git would commit.
+
 `pytest.ini` sets `pythonpath = .`. Without it `import agent_dotenv` fails.
 
 ## Layout
 
-- `agent_dotenv/frontmatter.py`, `layers.py`: parse the `---` header, load, filter and resolve layers. The Claude Code adapter copies both flat into a plugin, so they import each other with `try: from .x import ... except ImportError: from x import ...`. Keep that form.
+- `agent_dotenv/frontmatter.py`, `layers.py`: parse the `---` header, load, filter and resolve layers. The Claude Code adapter copies both flat into a plugin. `layers.py` imports `frontmatter` with `try: from .frontmatter import ... except ImportError: from frontmatter import ...`. `frontmatter.py` imports neither. Keep that form.
 - `scan.py`: the secret scan. `adapters_api.py`: `BuildContext`, `AdapterOutput` and adapter discovery. `pipeline.py`: `run_build`. `cli.py`: `init`, `build`, `doctor`. `templates.py`: the files `init` writes.
 - `agent_dotenv/adapters/`: the four built-in adapters. Register a new one in `adapters/__init__.py`.
 - `examples/minimal/`: a source folder with one drop-in adapter. `tests/fixtures/source/`: the test source folder.
@@ -42,6 +44,7 @@ python3 -m agent_dotenv build --source examples/minimal
 - Test tokens are built at runtime from fragments. Never commit a token-shaped literal.
 - Public files hold no company name, personal email or home-directory path. The neutrality test checks this. Use placeholders such as `~/my-agent-env`.
 - Built-in hooks exit 0 on every error.
+- The Claude Code session-start hook runs `python3`, so `python3` must be on `PATH`.
 
 ## Git
 

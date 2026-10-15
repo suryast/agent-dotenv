@@ -17,7 +17,17 @@ You need Python 3.9 or newer. There is no PyPI release in v1.
 pipx install git+https://github.com/suryast/agent-dotenv
 ```
 
-This installs the `agent-dotenv` command. From a checkout you can run `python3 -m agent_dotenv` instead.
+This installs the `agent-dotenv` command.
+
+You can also run `python3 -m agent_dotenv` from a checkout of this repository. It works only when the checkout is the current folder or is on `PYTHONPATH`. Then pass your source folder with `--source`:
+
+```bash
+cd ~/src/agent-dotenv
+```
+
+```bash
+python3 -m agent_dotenv build --source ~/my-agent-env
+```
 
 ## Quickstart
 
@@ -56,6 +66,17 @@ scope: personal
 - Write short, direct answers.
 - Ask before deleting files.
 - Run the tests before you say a change is done.
+```
+
+And `base/identity.md`:
+
+```markdown
+---
+scope: personal
+---
+# Identity
+
+- I am a backend developer. I work mostly in Python.
 ```
 
 Build every adapter.
@@ -163,11 +184,13 @@ flowchart LR
 
 An adapter returns data and does not write files. The core scans that data, deletes the old `dist/NAME/` and writes the new files. See [docs/security.md](docs/security.md) for what the scan catches and what it does not.
 
+`build` never prints a secret value. This includes the file paths in findings: a `secrets.ref` value in a path is shown as `[redacted]`.
+
 ## Adapters
 
 | Adapter | Writes | External content |
 |---|---|---|
-| `agents-md` | `AGENTS.md` (rules, then identity) and `skills/<name>/SKILL.md` copies | No. Refused, because `AGENTS.md` is meant to be committed to project repositories. |
+| `agents-md` | `AGENTS.md` (rules, then identity, then a `## Skills` index section when skills exist) and `skills/<name>/SKILL.md` copies | No. Refused, because `AGENTS.md` is meant to be committed to project repositories. |
 | `claude-code` | A Claude Code plugin: manifest, skills, a session-start hook and a bundled loader | Index only. The hook prints one `path: description` line for each external file at session start. The plugin holds no external body text. |
 | `cursor` | `.cursor/rules/agent-dotenv-rules.mdc` and `agent-dotenv-identity.mdc`, both `alwaysApply: true` | No. Refused, because Cursor rule files are committed to project repositories. |
 | `claude-ai-project` | `project-instructions.md` and `docs/` for upload. It warns above 8,000 characters (`--instructions-limit N`). | Yes. External files are written to `docs/` as full bodies. |
@@ -176,6 +199,7 @@ Behaviour to know about:
 
 - In `claude-ai-project`, an external layer file named `rules.md` replaces the base rules in the instructions, and it is also written to `docs/rules.md`. Layers replace by relative path.
 - The Claude Code plugin version is the tool version. After a rebuild with new content, an installed copy may not refresh. Reload the plugin or reinstall it.
+- The Claude Code session-start hook runs `python3`. `python3` must be on `PATH` for the agent.
 - A drop-in adapter runs as ordinary Python with your permissions. It loads only from `<source>/adapters/`. See [docs/adapters.md](docs/adapters.md).
 
 ## Commands
@@ -183,8 +207,10 @@ Behaviour to know about:
 | Command | What it does |
 |---|---|
 | `agent-dotenv init [--source DIR] [--layer DIR]` | Creates the starter files. It never overwrites a file. `--layer` needs an absolute path to an empty or new folder. |
-| `agent-dotenv build [--target NAME ...] [--source DIR] [--instructions-limit N]` | Builds the named adapters, or all of them. `--source` defaults to `AGENT_DOTENV_HOME`, then the current directory. |
-| `agent-dotenv doctor [--source DIR]` | Checks `local/paths.env`, external layer paths, the Python version, the names in `secrets.ref`, drop-in adapters and whether `dist/` is newer than the sources. It exits 1 on any failure. |
+| `agent-dotenv build [--target NAME]... [--source DIR] [--instructions-limit N]` | Builds the named adapters, or all of them. Repeat the flag for each adapter: `--target agents-md --target cursor`. `--source` defaults to `AGENT_DOTENV_HOME`, then the current directory. The source folder must have a `base/` folder. |
+| `agent-dotenv doctor [--source DIR]` | Checks the `base/` folder, `local/paths.env`, external layer paths, the Python version, the names in `secrets.ref`, drop-in adapters and whether `dist/` is newer than the sources. It exits 1 on any failure. |
+
+If you change a source and then build only some adapters (`build --target NAME`), `doctor` fails with "dist/ is older than the sources" for the other adapters until you run a full `build`.
 
 ## Documentation
 
@@ -193,6 +219,14 @@ Behaviour to know about:
 - [examples/minimal/](examples/minimal/): a small source folder with one drop-in adapter.
 
 ## Development
+
+The tests need `pytest`. Install it once:
+
+```bash
+python3 -m pip install pytest
+```
+
+Run the tests from the checkout:
 
 ```bash
 python3 -m pytest -q

@@ -19,6 +19,8 @@ PATHS_ENV = Path("local") / "paths.env"
 PATHS_ENV_EXAMPLE = Path("local") / "paths.env.example"
 MIN_PYTHON = (3, 9)
 DROPIN_NOTICE = "drop-in adapters run as Python with your permissions"
+NO_BASE = "%s has no base/ folder; run agent-dotenv init or pass --source"
+GITIGNORE = ".gitignore"
 
 
 def _resolve_dir(raw: str, cwd: Path) -> Path:
@@ -62,6 +64,16 @@ def _write_new(path: Path, text: str) -> bool:
     return True
 
 
+def _missing_ignores(path: Path) -> List[str]:
+    """Entries of the `init` template that the existing ignore file at `path` does not list."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    have = {line.strip().strip("/") for line in lines}
+    return [e for e in SOURCE_FILES[GITIGNORE].splitlines() if e.strip("/") not in have]
+
+
 def _set_paths_env_value(path: Path, key: str, value: str) -> None:
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     new = "%s=%s" % (key, value)
@@ -89,7 +101,14 @@ def cmd_init(args: argparse.Namespace, env: Mapping[str, str], cwd: Path) -> int
 
     for rel, text in SOURCE_FILES.items():
         target = source / rel
-        print("%s %s" % ("created" if _write_new(target, text) else "kept   ", target))
+        created = _write_new(target, text)
+        print("%s %s" % ("created" if created else "kept   ", target))
+        missing = [] if created or rel != GITIGNORE else _missing_ignores(target)
+        if missing:
+            print(
+                "notice: %s does not list %s; add the missing entries so git ignores them"
+                % (target, ", ".join(missing))
+            )
     paths_env = source / PATHS_ENV
     example = (source / PATHS_ENV_EXAMPLE).read_text(encoding="utf-8")
     if _write_new(paths_env, example):
@@ -115,6 +134,9 @@ def cmd_build(args: argparse.Namespace, env: Mapping[str, str], cwd: Path) -> in
     source = _source_dir(args, env, cwd)
     if not source.is_dir():
         print("error: source folder not found: %s" % source)
+        return 1
+    if not (source / "base").is_dir():
+        print("error: " + NO_BASE % source)
         return 1
     targets = args.target or [ALL]
     options = {}
@@ -167,6 +189,8 @@ def cmd_doctor(args: argparse.Namespace, env: Mapping[str, str], cwd: Path) -> i
             failures += 1
         print("%s  %s" % ("ok  " if ok else "FAIL", text))
 
+    base_ok = (source / "base").is_dir()
+    report(base_ok, "base/ folder exists" if base_ok else NO_BASE % source)
     paths_file = source / PATHS_ENV
     report(paths_file.is_file(), "%s exists" % PATHS_ENV.as_posix())
     paths_env = read_paths_env(paths_file)

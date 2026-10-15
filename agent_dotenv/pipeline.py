@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import shutil
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -56,17 +56,12 @@ def _requested(targets: Sequence[str], adapters: Mapping[str, Adapter]) -> Tuple
     return list(dict.fromkeys(targets)), []
 
 
-def _cleanup_names(
-    targets: Sequence[str], adapters: Optional[Mapping[str, Adapter]]
-) -> List[str]:
-    """Names whose dist/<name>/ a failed run deletes. Only safe names are returned.
+def _cleanup_names(targets: Sequence[str]) -> List[str]:
+    """Names whose dist/<name>/ a run deletes when it fails before the targets are checked.
 
-    With "all" and a failed discovery, only explicit names are known. Other
-    folders in dist/ may not be build output, so they are never deleted."""
-    names = {t for t in targets if t != ALL and NAME_PATTERN.fullmatch(t)}
-    if ALL in targets and adapters is not None:
-        names.update(adapters)
-    return sorted(names)
+    Only explicit, safe names are returned. With "all", the adapter names are not
+    known yet, and other folders in dist/ may not be build output, so they are kept."""
+    return sorted({t for t in targets if t != ALL and NAME_PATTERN.fullmatch(t)})
 
 
 def _remove_outputs(dist: Path, names: Iterable[str]) -> List[str]:
@@ -204,7 +199,8 @@ def run_build(
     """Build the requested adapters into `source_dir/dist/<name>/`.
 
     Expected failures do not raise. They return ok=False with messages in
-    `errors` and `findings`, and every requested `dist/<name>/` is deleted."""
+    `errors` and `findings`, and every requested `dist/<name>/` is deleted.
+    An unknown target name means nothing was attempted, so nothing is deleted."""
     source_dir = Path(os.path.abspath(str(source_dir)))
     dist = source_dir / DIST_DIR
     warns: List[str] = []
@@ -215,14 +211,15 @@ def run_build(
     built: Dict[str, Checked] = {}
     dist_is_link = dist.is_symlink()
 
-    def finish(ok: bool, written: Dict[str, List[Path]]) -> BuildResult:
+    def finish(ok: bool, written: Dict[str, List[Path]], cleanup: Sequence[str]) -> BuildResult:
+        """Return the result. When not ok, delete dist/<name>/ for each name in `cleanup`."""
         literals = sorted(
             {v for v in (env.get(n, "").strip() for n in secret_names) if len(v) >= MIN_SECRET_LEN},
             key=len,
             reverse=True,
         )
         if not ok and not dist_is_link:
-            errors.extend(_remove_outputs(dist, _cleanup_names(targets, adapters)))
+            errors.extend(_remove_outputs(dist, cleanup))
             try:
                 dist.rmdir()  # only succeeds when dist/ is empty
             except OSError:
@@ -233,28 +230,28 @@ def run_build(
             written=written,
             warnings=[_redact(w, literals) for w in warns],
             errors=[_redact(e, literals) for e in errors],
-            findings=findings,
+            findings=[replace(f, file=_redact(f.file, literals)) for f in findings],
         )
 
     if dist_is_link:
         # Writes and deletes would follow the link out of the source folder.
         errors.append("%s is a symlink; dist must be a real directory" % dist)
-        return finish(False, {})
+        return finish(False, {}, [])
     # Read secret names first, so every later error message is redacted.
     try:
         secret_names = sorted(read_secrets_ref(source_dir / "secrets.ref"))
     except (ValueError, OSError) as exc:
         errors.append("secrets.ref: %s" % exc)
-        return finish(False, {})
+        return finish(False, {}, _cleanup_names(targets))
     try:
         adapters = discover(source_dir)
     except AdapterError as exc:
         errors.append(str(exc))
-        return finish(False, {})
+        return finish(False, {}, _cleanup_names(targets))
     names, problems = _requested(targets, adapters)
     if problems:
         errors.extend(problems)
-        return finish(False, {})
+        return finish(False, {}, [])  # nothing was attempted, so nothing is deleted
 
     paths_env = read_paths_env(source_dir / "local" / "paths.env")
     externals, layer_warns = external_layer_dirs(env, paths_env)
@@ -264,7 +261,7 @@ def run_build(
         validate_targets(layers, set(adapters))
     except (FrontmatterError, OSError) as exc:
         errors.append(str(exc))
-        return finish(False, {})
+        return finish(False, {}, names)
     # layers is [base, *externals, local]; a refusing adapter gets no external layer.
     own_layers = [layers[0], layers[-1]]
 
@@ -300,7 +297,7 @@ def run_build(
         built[name] = checked
         warns.extend("%s: %s" % (name, w) for w in output.warnings)
     if errors:
-        return finish(False, {})
+        return finish(False, {}, names)
 
     for name in names:
         files, scan_texts = built[name]
@@ -317,11 +314,11 @@ def run_build(
         )
     if findings:
         errors.append("secret scan found %d problem(s); no output was kept" % len(findings))
-        return finish(False, {})
+        return finish(False, {}, names)
 
     errors.extend(_remove_outputs(dist, names))
     if errors:
-        return finish(False, {})
+        return finish(False, {}, names)
     written: Dict[str, List[Path]] = {}
     for name in names:
         root = dist / name
@@ -333,7 +330,7 @@ def run_build(
                 target.write_bytes(data)
             except OSError as exc:
                 errors.append("adapter %s: cannot write %s: %s" % (name, rel, exc))
-                return finish(False, {})
+                return finish(False, {}, names)
             paths.append(target)
         written[name] = sorted(paths)
-    return finish(True, written)
+    return finish(True, written, names)
