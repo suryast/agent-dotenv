@@ -32,19 +32,21 @@ def _source_dir(args: argparse.Namespace, env: Mapping[str, str], cwd: Path) -> 
     return _resolve_dir(raw, cwd) if raw else cwd
 
 
-def _files_under(root: Path) -> List[Path]:
-    """Files under `root`, skipping hidden entries (a name that starts with a dot).
+def _files_under(root: Path, skip_hidden: bool = True) -> List[Path]:
+    """Files under `root`.
 
-    The layer loader also skips hidden folders, so build and doctor agree on what a source is."""
+    With `skip_hidden`, entries whose name starts with a dot are skipped. The layer loader
+    also skips hidden folders, so build and doctor agree on what a source is. Build output
+    is walked with skip_hidden=False, because an adapter may write only into hidden paths."""
     found: List[Path] = []
     if not root.is_dir():
         return found
     for dirpath, dirs, names in os.walk(str(root)):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+        dirs[:] = [d for d in dirs if not (skip_hidden and d.startswith(".")) and d != "__pycache__"]
         found.extend(
             Path(dirpath) / name
             for name in names
-            if not name.startswith(".") and (Path(dirpath) / name).is_file()
+            if not (skip_hidden and name.startswith(".")) and (Path(dirpath) / name).is_file()
         )
     return found
 
@@ -215,7 +217,7 @@ def cmd_doctor(args: argparse.Namespace, env: Mapping[str, str], cwd: Path) -> i
     folder_times = {}
     if dist_root.is_dir():
         for folder in sorted(p for p in dist_root.iterdir() if p.is_dir()):
-            times = [f.stat().st_mtime for f in _files_under(folder)]
+            times = [f.stat().st_mtime for f in _files_under(folder, skip_hidden=False)]
             if times:
                 folder_times[folder.name] = max(times)
     if not folder_times:

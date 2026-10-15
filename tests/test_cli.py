@@ -42,6 +42,26 @@ def add_dropin(source: Path, name: str = "echo") -> Path:
     return path
 
 
+HIDDEN_ADAPTER = '''\
+from agent_dotenv.adapters_api import AdapterOutput
+
+NAME = "hid"
+ACCEPTS_EXTERNAL = False
+
+
+def build(ctx):
+    return AdapterOutput(files={".hidden/x.txt": "hello\\n"})
+'''
+
+
+def add_hidden_dropin(source: Path) -> Path:
+    folder = source / "adapters"
+    folder.mkdir(exist_ok=True)
+    path = folder / "hid.py"
+    path.write_text(HIDDEN_ADAPTER, encoding="utf-8")
+    return path
+
+
 def make_ready_source(tmp_path: Path) -> Path:
     """A fixture source with a local/paths.env, as `init` would leave it."""
     source = make_source(tmp_path)
@@ -415,6 +435,35 @@ def test_doctor_fails_after_a_partial_rebuild_and_names_the_stale_folder(tmp_pat
     assert main(["build", "--source", str(source)], {}, tmp_path) == 0
     capsys.readouterr()
     assert main(["doctor", "--source", str(source)], {}, tmp_path) == 0
+
+
+def test_doctor_counts_an_adapter_that_writes_only_hidden_paths(tmp_path, capsys):
+    source = make_ready_source(tmp_path)
+    add_hidden_dropin(source)
+    assert main(["build", "--source", str(source), "--target", "hid"], {}, tmp_path) == 0
+    assert files_under(source / "dist" / "hid" / ".hidden")
+    capsys.readouterr()
+    assert main(["doctor", "--source", str(source)], {}, tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "no build output" not in out
+    assert "FAIL" not in out
+
+
+def test_doctor_names_a_stale_adapter_that_writes_only_hidden_paths(tmp_path, capsys):
+    source = make_ready_source(tmp_path)
+    add_hidden_dropin(source)
+    add_dropin(source, "echo")
+    assert main(["build", "--source", str(source), "--target", "hid", "--target", "echo"], {}, tmp_path) == 0
+    now = time.time()
+    for path in files_under(source / "dist"):
+        os.utime(path, (now - 100, now - 100))
+    os.utime(source / "base" / "rules.md", (now - 50, now - 50))
+    assert main(["build", "--source", str(source), "--target", "echo"], {}, tmp_path) == 0
+    capsys.readouterr()
+    assert main(["doctor", "--source", str(source)], {}, tmp_path) == 1
+    fails = [line for line in capsys.readouterr().out.splitlines() if line.startswith("FAIL")]
+    assert any("dist/hid" in line for line in fails)
+    assert not any("dist/echo" in line for line in fails)
 
 
 def test_doctor_fails_before_the_first_build(tmp_path, capsys):
