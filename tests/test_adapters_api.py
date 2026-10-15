@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import sys
 import types
 from pathlib import Path
@@ -86,6 +87,15 @@ def test_dropin_import_error_names_file(tmp_path):
     with pytest.raises(AdapterError) as err:
         discover(tmp_path)
     assert str(path) in str(err.value)
+    assert "agent_dotenv_dropin_broken" not in sys.modules
+
+
+def test_dropin_system_exit_becomes_adapter_error(tmp_path):
+    path = write_dropin(tmp_path, "quits.py", "import sys\nsys.exit(0)\n")
+    with pytest.raises(AdapterError) as err:
+        discover(tmp_path)
+    assert str(path) in str(err.value)
+    assert "agent_dotenv_dropin_quits" not in sys.modules
 
 
 def test_dropin_syntax_error_names_file(tmp_path):
@@ -112,9 +122,9 @@ def test_dropin_missing_build_or_name_fails(tmp_path, text):
     assert str(path) in str(err.value)
 
 
-@pytest.mark.parametrize("bad", ["Upper", "has space", "1leading", "", "under_score"])
+@pytest.mark.parametrize("bad", ["Upper", "has space", "1leading", "", "under_score", "ok\n"])
 def test_bad_name_pattern_fails(tmp_path, bad):
-    path = write_dropin(tmp_path, "bad.py", GOOD % (bad, "False"))
+    path = write_dropin(tmp_path, "bad.py", GOOD.replace('"%s"', "%r") % (bad, "False"))
     with pytest.raises(AdapterError) as err:
         discover(tmp_path)
     assert str(path) in str(err.value)
@@ -189,8 +199,8 @@ def test_dataclasses_shapes():
         sources={}, skills={}, external_index={}, external_roots=(),
         local_values={}, source_dir=Path("."), options={},
     )
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         ctx.options = {}  # type: ignore[misc]
     adapter = Adapter(name="n", accepts_external=False, build=lambda c: out, origin="builtin")
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         adapter.name = "m"  # type: ignore[misc]

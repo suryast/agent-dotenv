@@ -51,7 +51,7 @@ def _to_adapter(module: object, where: str, origin: str) -> Adapter:
     name = getattr(module, "NAME", None)
     if not isinstance(name, str):
         raise AdapterError("%s: missing NAME (a string)" % where)
-    if not NAME_PATTERN.match(name):
+    if not NAME_PATTERN.fullmatch(name):
         raise AdapterError(
             "%s: bad NAME %r, it must match %s" % (where, name, NAME_PATTERN.pattern)
         )
@@ -76,7 +76,7 @@ def _load_dropin(path: Path):
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         raise AdapterError("%s: import failed: %s: %s" % (path, type(exc).__name__, exc)) from exc
     finally:
         if previous is None:
