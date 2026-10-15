@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import textwrap
 from pathlib import Path
 
@@ -485,3 +486,104 @@ def test_options_reach_context(tmp_path):
     result = run_build(source, ["alpha"], env={})
     assert result.ok, result.errors
     assert dist_files(source, "alpha")["o.txt"] == b"[]"
+
+
+# Fix round 1 (review findings 1 to 6)
+
+
+def test_failed_discovery_with_all_keeps_user_folders_in_dist(tmp_path):
+    source = make_source(tmp_path)
+    (source / "adapters").mkdir()
+    (source / "adapters" / "broken.py").write_text("def (:\n", encoding="utf-8")
+    write_md(source / "dist" / "my-notes" / "keep.md", "mine\n")
+    result = run_build(source, ["all"], env={})
+    assert not result.ok
+    assert (source / "dist" / "my-notes" / "keep.md").is_file()
+
+
+def test_scan_text_key_cannot_hide_written_file(tmp_path):
+    source = make_source(tmp_path)
+    body = (
+        "return AdapterOutput(files={'session': 'x ' + %r}, "
+        "scan_texts={'session': 'clean'})" % fake_token()
+    )
+    write_adapter(source, "alpha", body)
+    result = run_build(source, ["alpha"], env={})
+    assert not result.ok
+    assert [(f.file, f.kind) for f in result.findings] == [("alpha/session", "pattern:ghp")]
+    assert not (source / "dist").exists()
+
+
+@pytest.mark.parametrize("warns", ["None", "'one string'", "[3]"])
+def test_bad_adapter_warnings_fail_and_clean_up(tmp_path, warns):
+    source = make_source(tmp_path)
+    write_adapter(source, "alpha", "return AdapterOutput(files={'a.txt': 'x'}, warnings=%s)" % warns)
+    plant_earlier_run(source, "alpha")
+    result = run_build(source, ["alpha"], env={})
+    assert not result.ok
+    assert any("alpha" in e and "warnings" in e for e in result.errors)
+    assert not any(len(w) <= len("alpha: x") for w in result.warnings)
+    assert not (source / "dist").exists()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "abc\\def-" + "TAILMARK1",
+        "it's-a-" + "TAILMARK2",
+        "both'and\"-" + "TAILMARK3",
+        "tab\there-" + "TAILMARK4",
+        "café-key-" + "TAILMARK5",
+    ],
+)
+def test_escaped_secret_value_redacted_in_errors(tmp_path, value):
+    source = make_source(tmp_path)
+    (source / "secrets.ref").write_text("MY_SECRET=env\n", encoding="utf-8")
+    write_adapter(source, "alpha", DUMP_BODY)
+    write_md(source / "base" / "oops.md", "---\n%s\n---\nbody\n" % value)
+    result = run_build(source, ["alpha"], env={"MY_SECRET": value})
+    assert not result.ok
+    assert any("oops.md" in e for e in result.errors)
+    assert "TAILMARK" not in all_text(result)
+
+
+def test_symlinked_dist_is_refused(tmp_path):
+    source = make_source(tmp_path)
+    write_adapter(source, "alpha", DUMP_BODY)
+    outside = tmp_path / "outside"
+    write_md(outside / "alpha" / "old.txt", "not build output\n")
+    write_md(outside / "projects" / "p.md", "user data\n")
+    (source / "dist").symlink_to(outside, target_is_directory=True)
+    before = tree(outside)
+    for targets in (["alpha"], ["all"]):
+        result = run_build(source, targets, env={})
+        assert not result.ok
+        assert any("dist" in e and "real directory" in e for e in result.errors)
+        assert tree(outside) == before
+        assert (source / "dist").is_symlink()
+
+
+def test_refusing_adapter_gets_no_external_layer_files(tmp_path):
+    source = make_source(tmp_path)
+    write_md(
+        source / "external_acme" / "plain.md",
+        """
+        ---
+        scope: personal
+        ---
+        EXT_PERSONAL_MARKER
+        """,
+    )
+    body = (
+        "return AdapterOutput(files={'keys.txt': repr((sorted(ctx.sources), "
+        "sorted(ctx.external_index)))})"
+    )
+    write_adapter(source, "taker", body, accepts=True)
+    write_adapter(source, "refuser", body, accepts=False)
+    result = run_build(source, ["all"], env={LAYERS_VAR: str(source / "external_acme")})
+    assert result.ok, result.errors
+    taker_sources, taker_index = ast.literal_eval(dist_files(source, "taker")["keys.txt"].decode())
+    refuser_sources, refuser_index = ast.literal_eval(dist_files(source, "refuser")["keys.txt"].decode())
+    assert "plain.md" in taker_sources and "plain.md" in taker_index
+    assert "plain.md" not in refuser_sources
+    assert refuser_index == []

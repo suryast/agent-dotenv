@@ -57,15 +57,15 @@ def _requested(targets: Sequence[str], adapters: Mapping[str, Adapter]) -> Tuple
 
 
 def _cleanup_names(
-    targets: Sequence[str], adapters: Optional[Mapping[str, Adapter]], dist: Path
+    targets: Sequence[str], adapters: Optional[Mapping[str, Adapter]]
 ) -> List[str]:
-    """Names whose dist/<name>/ a failed run deletes. Only safe names are returned."""
+    """Names whose dist/<name>/ a failed run deletes. Only safe names are returned.
+
+    With "all" and a failed discovery, only explicit names are known. Other
+    folders in dist/ may not be build output, so they are never deleted."""
     names = {t for t in targets if t != ALL and NAME_PATTERN.fullmatch(t)}
-    if ALL in targets:
-        if adapters is not None:
-            names.update(adapters)
-        elif dist.is_dir():
-            names.update(p.name for p in dist.iterdir() if NAME_PATTERN.fullmatch(p.name))
+    if ALL in targets and adapters is not None:
+        names.update(adapters)
     return sorted(names)
 
 
@@ -140,14 +140,34 @@ def _check_output(name: str, output: object) -> Tuple[Optional[Checked], List[st
         if not isinstance(key, str) or not isinstance(text, str):
             errors.append("adapter %s: scan_texts must map str to str" % name)
             break
+    if not isinstance(output.warnings, list) or not all(
+        isinstance(w, str) for w in output.warnings
+    ):
+        errors.append("adapter %s: warnings must be a list of str" % name)
     if errors:
         return None, errors
     return (files, dict(output.scan_texts)), []
 
 
+def _escaped_forms(value: str) -> List[str]:
+    """The value as it can appear in a message: plain, or escaped as by %r.
+
+    repr() picks its quote character from the whole string, so inside a longer
+    repr a single quote in the value can be escaped or not. Both forms count."""
+    single = repr(value + "'\"")[1:-4]  # repr with ' quotes, so ' is escaped
+    forms = {
+        value,
+        single,
+        single.replace("\\'", "'"),  # repr with " quotes, so ' is not escaped
+        value.encode("unicode_escape").decode("ascii"),
+    }
+    return sorted(forms, key=len, reverse=True)
+
+
 def _redact(text: str, literals: Sequence[str]) -> str:
     for value in literals:
-        text = text.replace(value, REDACTED)
+        for form in _escaped_forms(value):
+            text = text.replace(form, REDACTED)
     for _label, pattern in PATTERNS:
         text = pattern.sub(REDACTED, text)
     return text
@@ -193,6 +213,7 @@ def run_build(
     secret_names: List[str] = []
     adapters: Optional[Dict[str, Adapter]] = None
     built: Dict[str, Checked] = {}
+    dist_is_link = dist.is_symlink()
 
     def finish(ok: bool, written: Dict[str, List[Path]]) -> BuildResult:
         literals = sorted(
@@ -200,8 +221,8 @@ def run_build(
             key=len,
             reverse=True,
         )
-        if not ok:
-            errors.extend(_remove_outputs(dist, _cleanup_names(targets, adapters, dist)))
+        if not ok and not dist_is_link:
+            errors.extend(_remove_outputs(dist, _cleanup_names(targets, adapters)))
             try:
                 dist.rmdir()  # only succeeds when dist/ is empty
             except OSError:
@@ -215,6 +236,10 @@ def run_build(
             findings=findings,
         )
 
+    if dist_is_link:
+        # Writes and deletes would follow the link out of the source folder.
+        errors.append("%s is a symlink; dist must be a real directory" % dist)
+        return finish(False, {})
     # Read secret names first, so every later error message is redacted.
     try:
         secret_names = sorted(read_secrets_ref(source_dir / "secrets.ref"))
@@ -240,16 +265,24 @@ def run_build(
     except (FrontmatterError, OSError) as exc:
         errors.append(str(exc))
         return finish(False, {})
+    # layers is [base, *externals, local]; a refusing adapter gets no external layer.
+    own_layers = [layers[0], layers[-1]]
 
     local_values = _local_values(env, paths_env)
     for name in names:
         adapter = adapters[name]
         external_allowed = bool(externals) and adapter.accepts_external
-        sources, skills = resolve_filtered(layers, name, external_allowed)
+        sources, skills = resolve_filtered(
+            layers if external_allowed else own_layers, name, external_allowed
+        )
         ctx = BuildContext(
             sources=sources,
             skills=skills,
-            external_index={k: s for k, s in sources.items() if s.layer == "external"},
+            external_index=(
+                {k: s for k, s in sources.items() if s.layer == "external"}
+                if external_allowed
+                else {}
+            ),
             external_roots=tuple(externals),
             local_values=dict(local_values),
             source_dir=source_dir,
@@ -271,15 +304,17 @@ def run_build(
 
     for name in names:
         files, scan_texts = built[name]
-        texts: Dict[str, str] = {}
+        file_texts: Dict[str, str] = {}
         for rel, data in files:
             try:
-                texts["%s/%s" % (name, rel)] = data.decode("utf-8")
+                file_texts["%s/%s" % (name, rel)] = data.decode("utf-8")
             except UnicodeDecodeError:
                 pass  # binary output is not scanned
-        for key, text in scan_texts.items():
-            texts["%s/%s" % (name, key)] = text
-        findings.extend(scan(texts, secret_names, env))
+        # Two passes: a scan text key that equals a file path must not hide the file.
+        findings.extend(scan(file_texts, secret_names, env))
+        findings.extend(
+            scan({"%s/%s" % (name, k): t for k, t in scan_texts.items()}, secret_names, env)
+        )
     if findings:
         errors.append("secret scan found %d problem(s); no output was kept" % len(findings))
         return finish(False, {})
