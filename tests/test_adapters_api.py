@@ -16,6 +16,12 @@ from agent_dotenv.adapters_api import (
     discover,
 )
 
+@pytest.fixture(autouse=True)
+def no_builtins(monkeypatch):
+    # Real built-in adapters are registered by later tasks; these tests use fakes.
+    monkeypatch.setattr(adapters_pkg, "BUILTIN", ())
+
+
 GOOD = '''NAME = "%s"
 ACCEPTS_EXTERNAL = %s
 
